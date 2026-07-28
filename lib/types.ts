@@ -6,6 +6,11 @@ export interface BranchOption {
   tone: string;
   /** One-line rationale shown on the card, e.g. "Raises the stakes by…" */
   why: string;
+  /**
+   * 512×512 preview image URL prefetched immediately after AI branch response.
+   * Optional — may be absent if prefetch hasn't completed yet.
+   */
+  previewImageUrl?: string;
 }
 
 /** A committed node in the story tree. */
@@ -24,6 +29,34 @@ export interface StoryNode {
    * Used by computeLayout for symmetric spacing.
    */
   siblingIndex: number;
+  /**
+   * 768×768 committed-node image URL, computed from node id + text + styleDescription.
+   * Undefined for root nodes.
+   */
+  imageUrl?: string;
+  /**
+   * Browser load state for the committed illustration.
+   * - 'idle'    — no image requested (root node)
+   * - 'loading' — <img> rendered, awaiting onLoad/onError
+   * - 'ready'   — image painted successfully
+   * - 'error'   — all auto-retries exhausted; static placeholder shown
+   */
+  imageStatus: "idle" | "loading" | "ready" | "error";
+  /**
+   * Auto-retry budget remaining. Starts at 3 for committed nodes.
+   * Decremented on each onError; status becomes 'error' when 0.
+   */
+  imageRetries: number;
+}
+
+/**
+ * Snapshot of the tree data saved before a reset — used by the previousTree undo slot.
+ */
+export interface TreeSnapshot {
+  nodes: StoryNode[];
+  selectedNodeId: string | null;
+  activePathIds: string[];
+  styleDescription: string;
 }
 
 /** Complete application state, managed by useReducer in app/page.tsx. */
@@ -49,4 +82,15 @@ export interface TreeState {
   pendingReset: boolean;
   /** Temporarily holds the new opening text while waiting for reset confirmation. */
   pendingOpeningText: string;
+  /**
+   * User-supplied visual style description for image generation.
+   * Empty string → the default style is used in buildImageUrl.
+   */
+  styleDescription: string;
+  /**
+   * Single-slot undo buffer. Populated when the user confirms a tree reset so
+   * they can restore the previous tree via a dismissible banner.
+   * null = nothing to restore.
+   */
+  previousTree: TreeSnapshot | null;
 }

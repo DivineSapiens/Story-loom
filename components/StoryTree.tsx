@@ -24,6 +24,7 @@ interface StoryTreeProps {
   activePathIds: string[];
   onNodeClick: (nodeId: string) => void;
   onGenerateBranches: (nodeId: string) => void;
+  onImageStatusChange: (nodeId: string, status: StoryNode["imageStatus"], retriesLeft?: number) => void;
 }
 
 // ─── Node type registry — defined outside component to be referentially stable ─
@@ -39,6 +40,7 @@ function StoryTreeInner({
   activePathIds,
   onNodeClick,
   onGenerateBranches,
+  onImageStatusChange,
 }: StoryTreeProps) {
   const { fitView } = useReactFlow();
 
@@ -46,6 +48,9 @@ function StoryTreeInner({
 
   // Recompute layout whenever the node list changes.
   const layout = useMemo(() => computeLayout(storyNodes), [storyNodes]);
+
+  // The newest node (last in array) gets the enter animation.
+  const newestNodeId = storyNodes.length > 0 ? storyNodes[storyNodes.length - 1].id : null;
 
   // Build React Flow node descriptors.
   const rfNodes: Node[] = useMemo(
@@ -57,14 +62,23 @@ function StoryTreeInner({
         data: {
           ...sn,
           isOnActivePath: activeSet.has(sn.id),
+          isNewest: sn.id === newestNodeId,
           onNodeClick,
           onGenerateBranches,
+          onImageStatusChange,
         } satisfies StoryNodeData,
         width: 224,
         height: 200,
       })),
+    // newestNodeId derives from storyNodes, covered by the dep below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [storyNodes, layout, activeSet, onNodeClick, onGenerateBranches]
   );
+
+  // Track which edge id is newest so we can trigger the draw-in animation.
+  const newestEdgeId = storyNodes.length > 1
+    ? `e-${storyNodes[storyNodes.length - 1].parentId}-${storyNodes[storyNodes.length - 1].id}`
+    : null;
 
   // Build React Flow edge descriptors.
   const rfEdges: Edge[] = useMemo(
@@ -73,11 +87,16 @@ function StoryTreeInner({
         .filter((n) => n.parentId !== null)
         .map((n) => {
           const isActive = activeSet.has(n.id) && activeSet.has(n.parentId!);
+          const edgeId = `e-${n.parentId}-${n.id}`;
           return {
-            id: `e-${n.parentId}-${n.id}`,
+            id: edgeId,
             source: n.parentId!,
             target: n.id,
             type: "smoothstep",
+            // className "edge-new" triggers the CSS draw-in animation (globals.css).
+            // We only mark the most recently-added edge so older edges don't re-animate
+            // on every render.
+            className: edgeId === newestEdgeId ? "edge-new" : undefined,
             style: {
               stroke: isActive ? "#fbbf24" : "#4b5563",
               strokeWidth: isActive ? 2.5 : 1.5,
@@ -85,6 +104,9 @@ function StoryTreeInner({
             animated: false,
           };
         }),
+    // newestEdgeId intentionally excluded — its value derives from storyNodes.length
+    // which is already in the dep array via storyNodes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [storyNodes, activeSet]
   );
 

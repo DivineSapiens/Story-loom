@@ -5,23 +5,161 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── React Flow Controls dark-theme overrides ──────────────────────────────
-   RF injects its own stylesheet at a higher specificity than Tailwind's
-   !important utility classes for border/background, so we override here
-   with regular CSS using the published class names.
-   ─────────────────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+   KEYFRAMES
+   All animations are skipped for users with prefers-reduced-motion (see
+   the guard at the bottom of this file).
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── Node card enter: scale up from 0.8 with overshoot ──────────────────── */
+@keyframes node-enter {
+  0%   { opacity: 0; transform: scale(0.8); }
+  70%  { opacity: 1; transform: scale(1.04); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ── Card appear: scale + fade + slight vertical bounce ──────────────────── */
+@keyframes card-appear {
+  0%   { opacity: 0; transform: scale(0.88) translateY(8px); }
+  65%  { opacity: 1; transform: scale(1.03) translateY(-2px); }
+  100% { opacity: 1; transform: scale(1)    translateY(0); }
+}
+
+/* ── Edge draw-in: pathLength-based stroke reveal ────────────────────────── */
+@keyframes edge-draw {
+  from { stroke-dashoffset: 1; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* ── Quill bob: 3-beat bob for loading indicators ────────────────────────── */
+@keyframes quill-bob {
+  0%, 100% { transform: translateY(0)    rotate(-8deg); }
+  40%      { transform: translateY(-7px) rotate(3deg); }
+  70%      { transform: translateY(-3px) rotate(-3deg); }
+}
+
+/* ── Ink drip: tiny dot falls from quill tip ─────────────────────────────── */
+@keyframes ink-drip {
+  0%   { opacity: 0; transform: translateY(0)   scaleY(1); }
+  25%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(10px) scaleY(0.6); }
+}
+
+/* ── Bird drift: slow left-to-right crossing (starts off-screen left) ──────── */
+@keyframes bird-drift {
+  0%   { transform: translateX(-10vw); }
+  100% { transform: translateX(110vw); }
+}
+
+/* ── Wing flap: scaleY pulse applied to each wing path independently ─────── */
+@keyframes wing-flap {
+  0%,  100% { transform: scaleY(0.7); }
+  25%        { transform: scaleY(1.2); }
+  50%        { transform: scaleY(0.8); }
+  75%        { transform: scaleY(1.1); }
+}
+
+/* ── Bunny hop: translateX travel + multi-stop translateY arc series ──────── *
+ *  ~4 parabolic hops over a full crossing; last hop slightly smaller.        */
+@keyframes bunny-hop {
+  0%   { transform: translateX(-10vw)  translateY(0); }
+  6%   { transform: translateX(8vw)   translateY(-28px); }
+  12%  { transform: translateX(20vw)  translateY(0); }
+  18%  { transform: translateX(34vw)  translateY(-24px); }
+  24%  { transform: translateX(46vw)  translateY(0); }
+  30%  { transform: translateX(60vw)  translateY(-20px); }
+  36%  { transform: translateX(72vw)  translateY(0); }
+  42%  { transform: translateX(84vw)  translateY(-13px); }
+  48%  { transform: translateX(94vw)  translateY(0); }
+  100% { transform: translateX(110vw) translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ANIMATION UTILITY CLASSES
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.animate-node-enter {
+  animation: node-enter 280ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.animate-card-appear {
+  animation: card-appear 300ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+.animate-quill-bob {
+  animation: quill-bob 1s ease-in-out infinite;
+  transform-origin: 50% 90%;
+  display: inline-block;
+}
+
+.animate-ink-drip {
+  animation: ink-drip 1s ease-in 0.6s infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   EDGE DRAW-IN
+   React Flow renders each edge's <path> with .react-flow__edge-path inside
+   a <g> wrapper. We add data-new="true" on the newest edge's <g> (via the
+   edge className / data attribute trick) to trigger the draw-in.
+   We use pathLength="1" on the SVG path (set inline in StoryTree) so the
+   dasharray works regardless of actual path length.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* Newest edge: draw-in */
+.react-flow__edge.edge-new .react-flow__edge-path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: edge-draw 400ms ease-out 0ms both;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUTTON MICRO-INTERACTIONS
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* Generic interactive button: subtle lift + shadow on hover, press-down on active */
+.btn-interactive {
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.btn-interactive:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.btn-interactive:active {
+  transform: scale(0.96) translateY(0);
+  box-shadow: none;
+}
+
+/* Branch card: stronger lift, own transition (doesn't conflict with ring/bg Tailwind transitions) */
+.branch-card {
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.branch-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.branch-card:active {
+  transform: scale(0.97) translateY(0);
+  box-shadow: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   REACT FLOW CONTROLS — dark-theme overrides
+   RF injects its own stylesheet at higher specificity than Tailwind
+   !important utilities, so we override here with class names.
+   ═════════════════════════════════════════════════════════════════════════ */
+
 .react-flow__controls {
-  background: #111827;          /* gray-900 */
-  border: 1px solid #374151;    /* gray-700 */
+  background: #111827;
+  border: 1px solid #374151;
   border-radius: 0.5rem;
   box-shadow: none;
   overflow: hidden;
 }
 
 .react-flow__controls-button {
-  background: #111827;          /* gray-900 */
-  border-bottom: 1px solid #374151; /* gray-700 */
-  color: #9ca3af;               /* gray-400 — icon fill */
+  background: #111827;
+  border-bottom: 1px solid #374151;
+  color: #9ca3af;
   fill: #9ca3af;
   width: 28px;
   height: 28px;
@@ -34,8 +172,8 @@
 }
 
 .react-flow__controls-button:hover {
-  background: #1f2937;          /* gray-800 */
-  color: #fbbf24;               /* amber-400 */
+  background: #1f2937;
+  color: #fbbf24;
   fill: #fbbf24;
 }
 
@@ -43,4 +181,21 @@
   fill: inherit;
   max-width: 14px;
   max-height: 14px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PREFERS-REDUCED-MOTION
+   Kill all custom animations/transitions for users who have requested it.
+   Tailwind's built-in motion-safe/motion-reduce variants are also available
+   for inline className use.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1  !important;
+    transition-duration: 0.01ms  !important;
+  }
 }

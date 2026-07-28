@@ -1,0 +1,46 @@
+/* React Flow base styles — must come before Tailwind directives */
+@import "@xyflow/react/dist/style.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── React Flow Controls dark-theme overrides ──────────────────────────────
+   RF injects its own stylesheet at a higher specificity than Tailwind's
+   !important utility classes for border/background, so we override here
+   with regular CSS using the published class names.
+   ─────────────────────────────────────────────────────────────────────── */
+.react-flow__controls {
+  background: #111827;          /* gray-900 */
+  border: 1px solid #374151;    /* gray-700 */
+  border-radius: 0.5rem;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: #111827;          /* gray-900 */
+  border-bottom: 1px solid #374151; /* gray-700 */
+  color: #9ca3af;               /* gray-400 — icon fill */
+  fill: #9ca3af;
+  width: 28px;
+  height: 28px;
+  padding: 5px;
+  transition: background 100ms, color 100ms, fill 100ms;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.react-flow__controls-button:hover {
+  background: #1f2937;          /* gray-800 */
+  color: #fbbf24;               /* amber-400 */
+  fill: #fbbf24;
+}
+
+.react-flow__controls-button svg {
+  fill: inherit;
+  max-width: 14px;
+  max-height: 14px;
+}

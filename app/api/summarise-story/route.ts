@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateBranches } from "@/lib/ai/generateBranches";
+import { summariseStory } from "@/lib/ai/summariseStory";
 
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -9,7 +9,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const obj = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const obj = body !== null && typeof body === "object"
+    ? (body as Record<string, unknown>)
+    : {};
 
   const pathText =
     typeof obj.pathText === "string" ? obj.pathText.trim() : "";
@@ -21,11 +23,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const wrapUp = obj.wrapUp === true;
-
   try {
-    const branches = await generateBranches(pathText, wrapUp);
-    return NextResponse.json({ branches });
+    const summary = await summariseStory(pathText);
+    return NextResponse.json({ summary });
   } catch (err) {
     const detail =
       err instanceof Error
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
           ? err
           : "Unknown error from AI provider";
 
-    console.error("[/api/generate-branches] error:", detail);
-    return NextResponse.json({ error: "AI call failed", detail }, { status: 500 });
+    console.error("[/api/summarise-story] error:", detail);
+    return NextResponse.json({ error: "Summarise call failed", detail }, { status: 500 });
   }
 }

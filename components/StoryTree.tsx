@@ -13,75 +13,113 @@ import {
   BackgroundVariant,
   ReactFlowProvider,
 } from "@xyflow/react";
-import { computeLayout } from "@/lib/treeUtils";
-import type { StoryNode } from "@/lib/types";
+import { computeLayout, computeThreadLayout } from "@/lib/treeUtils";
+import { THREAD_PALETTE } from "@/lib/threadPalette";
+import type { StoryNode, CharacterThread } from "@/lib/types";
 import { StoryNodeCard, type StoryNodeData } from "./StoryNodeCard";
+import { ThreadNodeCard, type ThreadNodeData } from "./ThreadNodeCard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface StoryTreeProps {
+  // ── Main tree ──────────────────────────────────────────────────────────────
   nodes: StoryNode[];
   activePathIds: string[];
   onNodeClick: (nodeId: string) => void;
   onGenerateBranches: (nodeId: string) => void;
-  onImageStatusChange: (nodeId: string, status: StoryNode["imageStatus"], retriesLeft?: number) => void;
+  /** Called when user clicks "Branch a character's story →" on a main node. */
+  onCreateThread: (originNodeId: string) => void;
+  /** Called when user clicks the canvas background — dismisses the branch panel. */
+  onPaneClick: () => void;
+  onPruneNode:  (nodeId: string) => void;
+  onEditNode:   (nodeId: string, text: string) => void;
+  onInsertNode: (afterNodeId: string, text: string) => void;
+  // ── Character threads ──────────────────────────────────────────────────────
+  characterThreads: Record<string, CharacterThread>;
+  weaveLoading: boolean;
+  onThreadNodeClick: (threadId: string, nodeId: string) => void;
+  onThreadGenerateBranches: (threadId: string, nodeId: string) => void;
+  onWeaveNode: (threadId: string, nodeId: string) => void;
+  /** Opens the appearances panel for a character thread. */
+  onShowAppearances: (threadId: string) => void;
+  onThreadPruneNode:  (threadId: string, nodeId: string) => void;
+  onThreadEditNode:   (threadId: string, nodeId: string, text: string) => void;
+  onThreadInsertNode: (threadId: string, afterNodeId: string, text: string) => void;
 }
 
-// ─── Node type registry — defined outside component to be referentially stable ─
+// ─── Node type registry — must be referentially stable (outside component) ────
 
 const nodeTypes: NodeTypes = {
-  storyNode: StoryNodeCard,
+  storyNode:  StoryNodeCard,
+  threadNode: ThreadNodeCard,
 };
 
-// ─── Inner component that has access to useReactFlow() ───────────────────────
+// ─── Inner component (has access to useReactFlow) ─────────────────────────────
 
 function StoryTreeInner({
   nodes: storyNodes,
   activePathIds,
   onNodeClick,
   onGenerateBranches,
-  onImageStatusChange,
+  onCreateThread,
+  onPaneClick,
+  onPruneNode,
+  onEditNode,
+  onInsertNode,
+  characterThreads,
+  weaveLoading,
+  onThreadNodeClick,
+  onThreadGenerateBranches,
+  onWeaveNode,
+  onShowAppearances,
+  onThreadPruneNode,
+  onThreadEditNode,
+  onThreadInsertNode,
 }: StoryTreeProps) {
   const { fitView } = useReactFlow();
 
   const activeSet = useMemo(() => new Set(activePathIds), [activePathIds]);
 
-  // Recompute layout whenever the node list changes.
-  const layout = useMemo(() => computeLayout(storyNodes), [storyNodes]);
+  // ── Main tree layout ───────────────────────────────────────────────────────
+  const mainLayout = useMemo(() => computeLayout(storyNodes), [storyNodes]);
 
-  // The newest node (last in array) gets the enter animation.
-  const newestNodeId = storyNodes.length > 0 ? storyNodes[storyNodes.length - 1].id : null;
+  const newestMainNodeId = storyNodes.length > 0
+    ? storyNodes[storyNodes.length - 1].id
+    : null;
 
-  // Build React Flow node descriptors.
-  const rfNodes: Node[] = useMemo(
+  // ── Build main-tree RF nodes ───────────────────────────────────────────────
+  const mainRfNodes: Node[] = useMemo(
     () =>
       storyNodes.map((sn): Node => ({
         id: sn.id,
         type: "storyNode",
-        position: layout[sn.id] ?? { x: 0, y: 0 },
+        position: mainLayout[sn.id] ?? { x: 0, y: 0 },
         data: {
           ...sn,
           isOnActivePath: activeSet.has(sn.id),
-          isNewest: sn.id === newestNodeId,
+          isNewest: sn.id === newestMainNodeId,
           onNodeClick,
           onGenerateBranches,
-          onImageStatusChange,
+          onCreateThread,
+          onPruneNode,
+          onEditNode,
+          onInsertNode,
         } satisfies StoryNodeData,
         width: 224,
-        height: 200,
+        // 240px matches the tallest realistic card (tone badge + 5-line text +
+        // "Why:" line). React Flow uses this for minimap and overlap detection.
+        height: 240,
       })),
-    // newestNodeId derives from storyNodes, covered by the dep below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [storyNodes, layout, activeSet, onNodeClick, onGenerateBranches]
+    [storyNodes, mainLayout, activeSet, onNodeClick, onGenerateBranches, onCreateThread, onPruneNode, onEditNode, onInsertNode]
   );
 
-  // Track which edge id is newest so we can trigger the draw-in animation.
-  const newestEdgeId = storyNodes.length > 1
+  // ── Build main-tree RF edges ───────────────────────────────────────────────
+  const newestMainEdgeId = storyNodes.length > 1
     ? `e-${storyNodes[storyNodes.length - 1].parentId}-${storyNodes[storyNodes.length - 1].id}`
     : null;
 
-  // Build React Flow edge descriptors.
-  const rfEdges: Edge[] = useMemo(
+  const mainRfEdges: Edge[] = useMemo(
     () =>
       storyNodes
         .filter((n) => n.parentId !== null)
@@ -93,10 +131,7 @@ function StoryTreeInner({
             source: n.parentId!,
             target: n.id,
             type: "smoothstep",
-            // className "edge-new" triggers the CSS draw-in animation (globals.css).
-            // We only mark the most recently-added edge so older edges don't re-animate
-            // on every render.
-            className: edgeId === newestEdgeId ? "edge-new" : undefined,
+            className: edgeId === newestMainEdgeId ? "edge-new" : undefined,
             style: {
               stroke: isActive ? "#fbbf24" : "#4b5563",
               strokeWidth: isActive ? 2.5 : 1.5,
@@ -104,32 +139,182 @@ function StoryTreeInner({
             animated: false,
           };
         }),
-    // newestEdgeId intentionally excluded — its value derives from storyNodes.length
-    // which is already in the dep array via storyNodes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [storyNodes, activeSet]
   );
 
-  // Fit the view whenever nodes are added so new content is always visible.
+  // ── Build thread RF nodes + edges ─────────────────────────────────────────
+  const { threadRfNodes, threadRfEdges } = useMemo(() => {
+    const tNodes: Node[] = [];
+    const tEdges: Edge[] = [];
+
+    const threads = Object.values(characterThreads);
+    for (const thread of threads) {
+      const palette = THREAD_PALETTE[thread.paletteIndex] ?? THREAD_PALETTE[0];
+      const threadLayout = computeThreadLayout(thread, mainLayout);
+
+      // Thread nodes
+      const newestThreadNodeId = thread.nodes.length > 0
+        ? thread.nodes[thread.nodes.length - 1].id
+        : null;
+
+      for (const tn of thread.nodes) {
+        tNodes.push({
+          id: tn.id,
+          type: "threadNode",
+          position: threadLayout[tn.id] ?? { x: 0, y: 0 },
+          data: {
+            ...tn,
+            threadId: thread.id,
+            characterName: thread.characterName,
+            paletteIndex: thread.paletteIndex,
+            isNewest: tn.id === newestThreadNodeId,
+            weaveLoading,
+            onThreadNodeClick,
+            onThreadGenerateBranches,
+            onWeaveNode,
+            onShowAppearances,
+            onThreadPruneNode,
+            onThreadEditNode,
+            onThreadInsertNode,
+          } satisfies ThreadNodeData,
+          width: 224,
+          height: 220,
+        });
+      }
+
+      // Intra-thread edges (parent → child within the thread)
+      for (const tn of thread.nodes) {
+        if (tn.parentId === null) continue;
+        tEdges.push({
+          id: `te-${tn.parentId}-${tn.id}`,
+          source: tn.parentId,
+          target: tn.id,
+          type: "smoothstep",
+          style: { stroke: palette.edge, strokeWidth: 1.5 },
+          animated: false,
+        });
+      }
+
+      // Origin edge: dashed line from main-tree origin node → first thread node
+      if (thread.nodes.length > 0) {
+        const threadRoot = thread.nodes.find((n) => n.parentId === null);
+        if (threadRoot) {
+          tEdges.push({
+            id: `thread-entry-${thread.id}`,
+            source: thread.originNodeId,
+            target: threadRoot.id,
+            type: "straight",
+            style: {
+              stroke: palette.ring,
+              strokeWidth: 1.5,
+              strokeDasharray: "6 4",
+            },
+            animated: false,
+          });
+        }
+      }
+
+    }
+
+    // ── Relationship edges — drawn between the origin nodes of two related threads ─
+    // These are dotted white/gray, styled distinctly from the dashed origin-connector.
+    // We only emit one edge per pair (the thread that declares relatedToThreadId
+    // is the "source"; we skip if the target thread doesn't exist).
+    // Source anchor: the origin node of this thread (a main-tree node).
+    // Target anchor: the origin node of the related thread (also a main-tree node).
+    // Because both endpoints are main-tree nodes, they are already in the RF graph.
+    const processedRelationPairs = new Set<string>();
+    for (const thread of threads) {
+      if (!thread.relatedToThreadId || !thread.relationshipLabel) continue;
+      const targetThread = characterThreads[thread.relatedToThreadId];
+      if (!targetThread) continue;
+
+      // Deduplicate: skip if we already emitted A→B or B→A
+      const pairKey = [thread.id, thread.relatedToThreadId].sort().join("|");
+      if (processedRelationPairs.has(pairKey)) continue;
+      processedRelationPairs.add(pairKey);
+
+      const thisPalette   = THREAD_PALETTE[thread.paletteIndex]   ?? THREAD_PALETTE[0];
+      const targetPalette = THREAD_PALETTE[targetThread.paletteIndex] ?? THREAD_PALETTE[0];
+
+      // Edge colour: blend the two thread colours by using white with low opacity.
+      // This keeps it visually distinct from the palette-coloured origin edges.
+      tEdges.push({
+        id: `rel-${pairKey}`,
+        source: thread.originNodeId,
+        target: targetThread.originNodeId,
+        type: "straight",
+        label: thread.relationshipLabel,
+        labelStyle: {
+          fontSize: 9,
+          fontWeight: 700,
+          fill: "#e5e7eb",
+          fontFamily: "inherit",
+          textTransform: "uppercase" as const,
+          letterSpacing: "0.08em",
+        },
+        labelBgStyle: {
+          fill: "#111827",
+          fillOpacity: 0.85,
+        },
+        labelBgPadding: [4, 6] as [number, number],
+        labelBgBorderRadius: 4,
+        style: {
+          stroke: "#e5e7eb",
+          strokeWidth: 1,
+          strokeDasharray: "3 3",
+          opacity: 0.45,
+        },
+        animated: false,
+        // Suppress the default arrowhead — this is a bidirectional relationship
+        markerEnd: undefined,
+        data: { thisPaletteRing: thisPalette.ring, targetPaletteRing: targetPalette.ring },
+      });
+    }
+
+    return { threadRfNodes: tNodes, threadRfEdges: tEdges };
+  }, [characterThreads, mainLayout, weaveLoading, onThreadNodeClick, onThreadGenerateBranches, onWeaveNode, onShowAppearances, onThreadPruneNode, onThreadEditNode, onThreadInsertNode]);
+
+  // ── Merge all nodes + edges ────────────────────────────────────────────────
+  const allNodes = useMemo(
+    () => [...mainRfNodes, ...threadRfNodes],
+    [mainRfNodes, threadRfNodes]
+  );
+  const allEdges = useMemo(
+    () => [...mainRfEdges, ...threadRfEdges],
+    [mainRfEdges, threadRfEdges]
+  );
+
+  // ── Fit view whenever anything is added ───────────────────────────────────
   useEffect(() => {
-    if (storyNodes.length > 0) {
-      const id = setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 50);
+    const totalNodes = storyNodes.length +
+      Object.values(characterThreads).reduce((s, t) => s + t.nodes.length, 0);
+    if (totalNodes > 0) {
+      const id = setTimeout(() => fitView({ padding: 0.18, duration: 400 }), 50);
       return () => clearTimeout(id);
     }
-  }, [storyNodes.length, fitView]);
+  }, [
+    storyNodes.length,
+    // Re-fit when any thread gains or loses nodes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    Object.values(characterThreads).reduce((s, t) => s + t.nodes.length, 0),
+    fitView,
+  ]);
 
   return (
     <ReactFlow
-      nodes={rfNodes}
-      edges={rfEdges}
+      nodes={allNodes}
+      edges={allEdges}
       nodeTypes={nodeTypes}
       fitView
-      fitViewOptions={{ padding: 0.2 }}
-      minZoom={0.2}
+      fitViewOptions={{ padding: 0.18 }}
+      minZoom={0.15}
       maxZoom={2}
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable={false}
+      onPaneClick={onPaneClick}
       proOptions={{ hideAttribution: false }}
       className="bg-gray-950"
     >
@@ -141,9 +326,14 @@ function StoryTreeInner({
       />
       <Controls showInteractive={false} />
       <MiniMap
-        nodeColor={(n) =>
-          (n.data as StoryNodeData).isOnActivePath ? "#fbbf24" : "#374151"
-        }
+        nodeColor={(n) => {
+          const d = n.data as (StoryNodeData | ThreadNodeData);
+          // Thread nodes coloured by their palette
+          if ("paletteIndex" in d) {
+            return THREAD_PALETTE[(d as ThreadNodeData).paletteIndex]?.ring ?? "#374151";
+          }
+          return (d as StoryNodeData).isOnActivePath ? "#fbbf24" : "#374151";
+        }}
         maskColor="rgba(3,7,18,0.7)"
         className="!bg-gray-900 !border !border-gray-700"
       />
@@ -151,7 +341,7 @@ function StoryTreeInner({
   );
 }
 
-// ─── Public export — wraps inner in ReactFlowProvider ────────────────────────
+// ─── Public export ────────────────────────────────────────────────────────────
 
 export default function StoryTree(props: StoryTreeProps) {
   return (

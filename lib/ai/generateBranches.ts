@@ -3,7 +3,7 @@ import type { BranchOption } from "../types";
 // ─── Shared system prompt (used by ALL providers) ─────────────────────────────
 
 const SYSTEM_INSTRUCTION = `You are a creative writing partner.
-Given the story so far, propose exactly 3 different ways the story could continue.
+Given the story so far, propose exactly 4 different ways the story could continue.
 Respond with ONLY a valid JSON array — no prose, no markdown, no code fences.
 Each element must have exactly these three keys:
   "text"  — 1–3 sentence continuation of the story
@@ -14,11 +14,15 @@ Example output format (do not copy these values):
 [
   {"text":"...", "tone":"Tense",      "why":"..."},
   {"text":"...", "tone":"Hopeful",    "why":"..."},
-  {"text":"...", "tone":"Mysterious", "why":"..."}
+  {"text":"...", "tone":"Mysterious", "why":"..."},
+  {"text":"...", "tone":"Dark",       "why":"..."}
 ]`;
 
-function buildPrompt(pathText: string): string {
-  return `${SYSTEM_INSTRUCTION}\n\nStory so far:\n${pathText}`;
+const WRAP_UP_ADDENDUM = `\n\nIMPORTANT: The writer wants to start wrapping up the story. Bias all 4 directions toward resolving or concluding the narrative within the next 1–3 exchanges — avoid opening major new threads or introducing new characters.`;
+
+function buildPrompt(pathText: string, wrapUp = false): string {
+  const instruction = wrapUp ? SYSTEM_INSTRUCTION + WRAP_UP_ADDENDUM : SYSTEM_INSTRUCTION;
+  return `${instruction}\n\nStory so far:\n${pathText}`;
 }
 
 // ─── Shared response parser (used by ALL providers) ───────────────────────────
@@ -63,7 +67,7 @@ function parseResponse(raw: string): Array<{ text: string; tone: string; why: st
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL   = "llama-3.3-70b-versatile";
 
-async function generateBranchesFromGroq(pathText: string): Promise<BranchOption[]> {
+async function generateBranchesFromGroq(pathText: string, wrapUp = false): Promise<BranchOption[]> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("GROQ_API_KEY is not set");
 
@@ -76,11 +80,11 @@ async function generateBranchesFromGroq(pathText: string): Promise<BranchOption[
     body: JSON.stringify({
       model: GROQ_MODEL,
       temperature: 0.85,
-      max_tokens: 700,
+      max_tokens: 900,
       // response_format forces the model to emit valid JSON — same as OpenAI.
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: SYSTEM_INSTRUCTION },
+        { role: "system", content: wrapUp ? SYSTEM_INSTRUCTION + WRAP_UP_ADDENDUM : SYSTEM_INSTRUCTION },
         { role: "user",   content: `Story so far:\n${pathText}` },
       ],
     }),
@@ -113,7 +117,7 @@ async function generateBranchesFromGroq(pathText: string): Promise<BranchOption[
   const parsed = parseResponse(toParse);
   if (!parsed) throw new Error(`Could not parse Groq response: ${raw.slice(0, 200)}`);
 
-  return parsed.slice(0, 3).map((b) => ({ id: crypto.randomUUID(), ...b }));
+  return parsed.slice(0, 4).map((b) => ({ id: crypto.randomUUID(), ...b }));
 }
 
 // ─── INACTIVE PROVIDER: Google Gemini (429 limit:0 on free tier) ─────────────
@@ -123,17 +127,15 @@ async function generateBranchesFromGroq(pathText: string): Promise<BranchOption[
 const GEMINI_MODEL = "gemini-2.0-flash";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-async function generateBranchesFromGemini(pathText: string): Promise<BranchOption[]> {
+async function generateBranchesFromGemini(pathText: string, wrapUp = false): Promise<BranchOption[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
 
   const url = `${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
   const body = {
-    // systemInstruction keeps the directive separate from the user turn,
-    // which gives Gemini a cleaner signal to stay in JSON-only mode.
     systemInstruction: {
-      parts: [{ text: SYSTEM_INSTRUCTION }],
+      parts: [{ text: wrapUp ? SYSTEM_INSTRUCTION + WRAP_UP_ADDENDUM : SYSTEM_INSTRUCTION }],
     },
     contents: [
       {
@@ -144,8 +146,7 @@ async function generateBranchesFromGemini(pathText: string): Promise<BranchOptio
     generationConfig: {
       temperature: 0.85,
       topP: 0.9,
-      maxOutputTokens: 700,
-      // Gemini supports JSON mode — forces the model to emit valid JSON.
+      maxOutputTokens: 900,
       responseMimeType: "application/json",
     },
   };
@@ -173,8 +174,7 @@ async function generateBranchesFromGemini(pathText: string): Promise<BranchOptio
   const parsed = parseResponse(raw);
   if (!parsed) throw new Error(`Could not parse Gemini response: ${raw.slice(0, 200)}`);
 
-  // Take exactly 3 (model may occasionally return more).
-  return parsed.slice(0, 3).map((b) => ({ id: crypto.randomUUID(), ...b }));
+  return parsed.slice(0, 4).map((b) => ({ id: crypto.randomUUID(), ...b }));
 }
 
 // ─── INACTIVE PROVIDER: watsonx / Granite — swap back in once IBM auth is resolved
@@ -198,14 +198,14 @@ function getWatsonxClient(): import("@ibm-cloud/watsonx-ai").WatsonXAI {
   return _watsonxClient;
 }
 
-async function generateBranchesFromWatsonx(pathText: string): Promise<BranchOption[]> {
+async function generateBranchesFromWatsonx(pathText: string, wrapUp = false): Promise<BranchOption[]> {
   const client = getWatsonxClient();
   const response = await client.generateText({
     modelId: process.env.WATSONX_MODEL_ID ?? "ibm/granite-3-8b-instruct",
     projectId: process.env.WATSONX_PROJECT_ID!,
-    input: buildPrompt(pathText),
+    input: buildPrompt(pathText, wrapUp),
     parameters: {
-      max_new_tokens: 700,
+      max_new_tokens: 900,
       temperature: 0.85,
       top_p: 0.9,
       repetition_penalty: 1.1,
@@ -216,7 +216,7 @@ async function generateBranchesFromWatsonx(pathText: string): Promise<BranchOpti
   if (!raw) throw new Error("Empty response from watsonx");
   const parsed = parseResponse(raw);
   if (!parsed) throw new Error(`Could not parse watsonx response: ${raw.slice(0, 200)}`);
-  return parsed.slice(0, 3).map((b) => ({ id: crypto.randomUUID(), ...b }));
+  return parsed.slice(0, 4).map((b) => ({ id: crypto.randomUUID(), ...b }));
 }
 
 // ─── Stub (used when no live credentials are configured) ──────────────────────
@@ -241,13 +241,19 @@ function generateBranchesStub(_pathText: string): BranchOption[] {
       tone: "Melancholy",
       why: "Introduces a mysterious connection to another character and opens an emotional thread to pull on.",
     },
+    {
+      id: crypto.randomUUID(),
+      text: "She stepped outside to find the village deserted — every door ajar, every hearth cold, as though its people had simply stopped mid-sentence and walked away into the dark.",
+      tone: "Mysterious",
+      why: "Raises an unsettling environmental mystery that invites exploration without resolving the existing thread.",
+    },
   ];
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Returns exactly 3 branch options for the current story path.
+ * Returns exactly 4 branch options for the current story path.
  *
  * ACTIVE PROVIDER: Groq (llama-3.3-70b-versatile)
  *
@@ -255,13 +261,12 @@ function generateBranchesStub(_pathText: string): BranchOption[] {
  *   - No GROQ_API_KEY set → stub data (app still works for demo purposes).
  *   - GROQ_API_KEY set    → real Groq call; errors propagate to the UI.
  *
- * ── PROVIDER SWAP LINE ── change the function called at the bottom of this
- * function to switch providers:
+ * ── PROVIDER SWAP LINE ── change the function called at the return below:
  *   Groq    (active):   generateBranchesFromGroq
  *   Gemini  (inactive): generateBranchesFromGemini   needs GEMINI_API_KEY
  *   watsonx (inactive): generateBranchesFromWatsonx  needs WATSONX_API_KEY + PROJECT_ID
  */
-export async function generateBranches(pathText: string): Promise<BranchOption[]> {
+export async function generateBranches(pathText: string, wrapUp = false): Promise<BranchOption[]> {
   const hasGroqKey =
     process.env.GROQ_API_KEY &&
     process.env.GROQ_API_KEY !== "your-groq-api-key-here";
@@ -271,5 +276,135 @@ export async function generateBranches(pathText: string): Promise<BranchOption[]
     return generateBranchesStub(pathText);
   }
 
-  return generateBranchesFromGroq(pathText); // ← PROVIDER SWAP LINE
+  return generateBranchesFromGroq(pathText, wrapUp); // ← PROVIDER SWAP LINE
+}
+
+// ─── PUBLIC: generateThreadBranches ──────────────────────────────────────────
+// Appended at end of file — uses the same Groq helper and parseResponse above.
+
+/**
+ * Generates 4 branch options for a character's side-story thread.
+ *
+ * Prompt context (in order):
+ *   1. Established main-story facts (canonSummary) — keeps thread consistent.
+ *   2. Character's name and backstory.
+ *   3. The thread's own node history (threadPathText).
+ *
+ * Same {text, tone, why} output shape as generateBranches.
+ * Same Groq provider; same json_object unwrap logic.
+ */
+export async function generateThreadBranches(params: {
+  canonSummary: string;
+  characterName: string;
+  backstory: string;
+  threadPathText: string;
+  wrapUp?: boolean;
+}): Promise<BranchOption[]> {
+  const { canonSummary, characterName, backstory, threadPathText, wrapUp = false } = params;
+
+  const hasGroqKey =
+    process.env.GROQ_API_KEY &&
+    process.env.GROQ_API_KEY !== "your-groq-api-key-here";
+
+  if (!hasGroqKey) {
+    console.warn("[generateThreadBranches] No GROQ_API_KEY — using stub data.");
+    return [
+      {
+        id: crypto.randomUUID(),
+        text: `${characterName} paused at the crossroads, weighing two paths — each carrying its own kind of cost.`,
+        tone: "Tense",
+        why: "Forces the character to make a meaningful choice that reveals their values.",
+      },
+      {
+        id: crypto.randomUUID(),
+        text: `An unexpected ally found ${characterName} in the shadows, offering help without explaining why.`,
+        tone: "Mysterious",
+        why: "Introduces tension between gratitude and suspicion.",
+      },
+      {
+        id: crypto.randomUUID(),
+        text: `${characterName} discovered a letter — old, water-stained — that answered one question and asked three more.`,
+        tone: "Revelatory",
+        why: "Reframes what the character thought they knew about their situation.",
+      },
+      {
+        id: crypto.randomUUID(),
+        text: `For the first time in a long while, ${characterName} allowed themselves to rest, and the world did not end because of it.`,
+        tone: "Hopeful",
+        why: "Provides emotional counterweight and character development through stillness.",
+      },
+    ];
+  }
+
+  const threadSystem = `You are a creative writing partner helping to develop a character's ` +
+    `side story that exists within a larger narrative world.\n` +
+    `Propose exactly 4 different ways this character's story could continue.\n` +
+    `The character's story must remain consistent with the established main-story facts.\n` +
+    `Respond with ONLY a valid JSON array — no prose, no markdown, no code fences.\n` +
+    `Each element must have exactly these three keys:\n` +
+    `  "text"  — 1–3 sentence continuation\n` +
+    `  "tone"  — a single descriptive word\n` +
+    `  "why"   — one sentence explaining why this direction is interesting` +
+    (wrapUp
+      ? `\n\nIMPORTANT: Bias all 4 directions toward resolving this character's arc ` +
+        `within the next 1–3 exchanges.`
+      : "");
+
+  const userMessage = [
+    canonSummary
+      ? `ESTABLISHED MAIN STORY FACTS:\n${canonSummary}`
+      : null,
+    `CHARACTER: ${characterName}`,
+    backstory ? `Their background: ${backstory}` : null,
+    threadPathText
+      ? `Their story so far:\n${threadPathText}`
+      : `This character's story is just beginning.`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.85,
+      max_tokens: 900,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: threadSystem },
+        { role: "user",   content: userMessage },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.statusText);
+    throw new Error(`Groq thread-branches error ${res.status}: ${errText}`);
+  }
+
+  const json = await res.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+
+  const raw = json.choices?.[0]?.message?.content?.trim() ?? "";
+  if (!raw) throw new Error("Empty response from Groq (thread branches)");
+
+  // Same json_object → array unwrap logic as generateBranchesFromGroq.
+  let toParse = raw;
+  try {
+    const probe = JSON.parse(raw);
+    if (!Array.isArray(probe)) {
+      const arrayValue = Object.values(probe).find(Array.isArray);
+      if (arrayValue) toParse = JSON.stringify(arrayValue);
+    }
+  } catch { /* let parseResponse handle it */ }
+
+  const parsed = parseResponse(toParse);
+  if (!parsed) throw new Error(`Could not parse thread-branch response: ${raw.slice(0, 200)}`);
+
+  return parsed.slice(0, 4).map((b) => ({ id: crypto.randomUUID(), ...b }));
 }

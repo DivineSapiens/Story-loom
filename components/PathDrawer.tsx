@@ -41,7 +41,7 @@ type ImageMap = Record<string, PanelEntry>;
 
 // ─── Retry constants ──────────────────────────────────────────────────────────
 
-const MAX_RETRIES     = 3;
+const MAX_RETRIES     = 5;
 const RETRY_DELAY_MS  = 4000; // 4-second countdown between attempts
 
 // ─── Title / tagline state ─────────────────────────────────────────────────────
@@ -206,7 +206,7 @@ function ComicPanel({ node, index, entry, nowMs, isSpeaking, panelRef }: ComicPa
             Retrying in {retryIn}s…
           </span>
           <span className="text-[9px] text-gray-400 font-sans">
-            Attempt {(entry.retries ?? 1)} of {MAX_RETRIES}
+            attempt {(entry.retries ?? 1) + 1} of {MAX_RETRIES + 1}
           </span>
         </div>
       ) : entry?.status === "failed" ? (
@@ -251,7 +251,7 @@ function ComicPanel({ node, index, entry, nowMs, isSpeaking, panelRef }: ComicPa
           )}
           {!isUser && entry?.status === "retrying" && (
             <span className="ml-auto text-[9px] text-amber-500/70 font-sans tabular-nums">
-              Retry {entry.retries}/{MAX_RETRIES} in {retryIn}s
+              Retry {(entry.retries ?? 1) + 1}/{MAX_RETRIES + 1} in {retryIn}s
             </span>
           )}
           {!isUser && entry?.status === "failed" && (
@@ -341,13 +341,51 @@ function resolveNarratorVoice(): Promise<SpeechSynthesisVoice | null> {
 // ─── Canvas download helper ────────────────────────────────────────────────────
 // Composites all panels into one tall PNG and triggers download.
 // Runs fully client-side — no extra libraries.
+//
+// Panel layout strategy:
+//   • "ready" image  → full IMAGE area (IMG_H) + CAPTION bar (CAPTION_H) = PANEL_H
+//   • no image yet   → IMAGE area replaced by "Generating…" dark block
+//   • failed image   → TEXT-ONLY panel: no image block drawn at all; the caption
+//     area expands to TEXT_ONLY_H so the full story text is readable.
+//   • user-authored  → thin ruled strip + normal caption
 
-const CANVAS_W       = 480;
-const IMG_H          = 360; // 4:3 ratio for CANVAS_W=480
-const CAPTION_H      = 80;
-const PANEL_H        = IMG_H + CAPTION_H;
-const TITLE_BLOCK_H  = 90;  // used only when title is available
-const PANEL_GAP      = 4;
+const CANVAS_W        = 480;
+const IMG_H           = 360;  // 4:3 ratio for CANVAS_W=480
+const CAPTION_H       = 80;
+const PANEL_H         = IMG_H + CAPTION_H;
+const TEXT_ONLY_H     = 160;  // height of a text-only panel (no image)
+const TITLE_BLOCK_H   = 90;   // used only when title is available
+const PANEL_GAP       = 4;
+
+/** Word-wrap ctx.fillText into multiple lines, returning number of lines drawn. */
+function wrapText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  maxLines: number
+): void {
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let line = "";
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w;
+    if (ctx.measureText(test).width > maxWidth) {
+      if (line) lines.push(line);
+      line = w;
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  for (let li = 0; li < Math.min(lines.length, maxLines); li++) {
+    let txt = lines[li];
+    if (li === maxLines - 1 && lines.length > maxLines) txt += "…";
+    ctx.fillText(txt, x, y + li * lineHeight);
+  }
+}
 
 async function downloadComic(
   path: StoryNode[],
@@ -355,9 +393,17 @@ async function downloadComic(
   title: string,
   tagline: string
 ): Promise<void> {
-  const hasTitle  = Boolean(title);
-  const topPad    = hasTitle ? TITLE_BLOCK_H : 16;
-  const totalH    = topPad + path.length * (PANEL_H + PANEL_GAP) + 16;
+  const hasTitle = Boolean(title);
+  const topPad   = hasTitle ? TITLE_BLOCK_H : 16;
+
+  // Pre-compute each panel's height so we can size the canvas accurately.
+  const panelHeights = path.map((node) => {
+    if (node.authorType === "user") return PANEL_H;
+    const entry = imageMap[node.id];
+    const hasImage = entry?.status === "ready" || entry?.status === "loading" || entry?.status === "retrying";
+    return hasImage ? PANEL_H : TEXT_ONLY_H;
+  });
+  const totalH = topPad + panelHeights.reduce((s, h) => s + h + PANEL_GAP, 0) + 16;
 
   const canvas  = document.createElement("canvas");
   canvas.width  = CANVAS_W;
@@ -379,30 +425,36 @@ async function downloadComic(
     ctx.textAlign = "center";
     ctx.fillText(title, CANVAS_W / 2, 38);
 
-    ctx.fillStyle  = "#9ca3af";
-    ctx.font       = "italic 13px serif";
+    ctx.fillStyle = "#9ca3af";
+    ctx.font      = "italic 13px serif";
     ctx.fillText(tagline, CANVAS_W / 2, 62);
   }
 
   // ── Panels ──────────────────────────────────────────────────────────────────
+  let yOffset = topPad;
   for (let i = 0; i < path.length; i++) {
-    const node     = path[i];
-    const entry    = imageMap[node.id];
-    const isUser   = node.authorType === "user";
-    const y        = topPad + i * (PANEL_H + PANEL_GAP);
-    const border   = isUser ? "#0d9488" : (TONE_BORDER[node.tone] ?? "#374151");
+    const node      = path[i];
+    const entry     = imageMap[node.id];
+    const isUser    = node.authorType === "user";
+    const panelH    = panelHeights[i];
+    const y         = yOffset;
+    const border    = isUser ? "#0d9488" : (TONE_BORDER[node.tone] ?? "#374151");
 
-    // Border frame
+    // ── Border frame ──────────────────────────────────────────────────────────
     ctx.strokeStyle = border;
     ctx.lineWidth   = 4;
-    ctx.strokeRect(2, y + 2, CANVAS_W - 4, PANEL_H - 4);
+    ctx.strokeRect(2, y + 2, CANVAS_W - 4, panelH - 4);
 
     if (isUser) {
-      // Thin ruled strip instead of image
-      ctx.fillStyle = "#f3f4f6";
-      ctx.fillRect(4, y + 4, CANVAS_W - 8, 12);
+      // ── User node: thin ruled strip, then caption fills the rest ────────────
+      ctx.fillStyle = "#1c2432";
+      ctx.fillRect(4, y + 4, CANVAS_W - 8, panelH - 8);
+      // Thin teal rule at top
+      ctx.fillStyle = "#0d9488";
+      ctx.fillRect(4, y + 4, CANVAS_W - 8, 3);
+
     } else if (entry?.status === "ready") {
-      // Draw the already-loaded browser image
+      // ── Has image: draw it ───────────────────────────────────────────────────
       const img = new window.Image();
       img.crossOrigin = "anonymous";
       await new Promise<void>((res) => {
@@ -410,33 +462,28 @@ async function downloadComic(
         img.onerror = () => res();
         img.src = entry.url;
       });
-    } else {
-      // Placeholder: hatched grey rectangle + "No image" label
-      ctx.fillStyle = "#e5e7eb";
+
+    } else if (!entry || entry.status === "loading" || entry.status === "retrying") {
+      // ── In-flight: dark "Generating…" block ─────────────────────────────────
+      ctx.fillStyle = "#111827";
       ctx.fillRect(4, y + 4, CANVAS_W - 8, IMG_H - 8);
-      // Draw diagonal hatching lines
-      ctx.strokeStyle = "#d1d5db";
-      ctx.lineWidth   = 1;
-      for (let x = -IMG_H; x < CANVAS_W; x += 20) {
-        ctx.beginPath();
-        ctx.moveTo(4 + x, y + 4);
-        ctx.lineTo(4 + x + IMG_H, y + 4 + IMG_H - 8);
-        ctx.stroke();
-      }
-      ctx.fillStyle = "#9ca3af";
+      ctx.fillStyle = "#6b7280";
       ctx.font      = "12px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(
-        entry?.status === "loading" ? "Generating…" : "No image",
-        CANVAS_W / 2,
-        y + 4 + (IMG_H - 8) / 2
-      );
+      ctx.fillText("Generating…", CANVAS_W / 2, y + 4 + (IMG_H - 8) / 2);
     }
+    // ── "failed" → text-only panel. No image block drawn at all.
+    //    The caption area below fills the entire panelH.
 
-    // Caption bar
-    const capY = y + IMG_H;
-    ctx.fillStyle = "#000";
-    ctx.fillRect(4, capY, CANVAS_W - 8, CAPTION_H);
+    // ── Caption bar ───────────────────────────────────────────────────────────
+    // For text-only panels (failed), the caption fills the whole panel height.
+    // For image panels, it's the bottom CAPTION_H strip as usual.
+    const textOnlyMode = !isUser && (entry?.status === "failed" || (!entry && panelH === TEXT_ONLY_H));
+    const capY         = textOnlyMode ? y + 4 : y + IMG_H;
+    const capH         = textOnlyMode ? panelH - 8 : CAPTION_H;
+
+    ctx.fillStyle = textOnlyMode ? "#0d1117" : "#000";
+    ctx.fillRect(4, capY, CANVAS_W - 8, capH);
 
     // Panel number
     ctx.fillStyle = "rgba(255,255,255,0.3)";
@@ -451,29 +498,14 @@ async function downloadComic(
     ctx.textAlign    = "left";
     ctx.fillText(isUser ? "YOUR WORDS" : node.tone.toUpperCase(), 36, capY + 16);
 
-    // Caption text — word-wrap into ~55-char lines
+    // Story text — more lines available in text-only mode
     ctx.fillStyle = "#fff";
-    ctx.font      = "13px serif";
+    ctx.font      = textOnlyMode ? "14px serif" : "13px serif";
     ctx.textAlign = "left";
-    const words     = node.text.split(" ");
-    const lines: string[] = [];
-    let line = "";
-    for (const w of words) {
-      const test = line ? `${line} ${w}` : w;
-      if (ctx.measureText(test).width > CANVAS_W - 24) {
-        if (line) lines.push(line);
-        line = w;
-      } else {
-        line = test;
-      }
-    }
-    if (line) lines.push(line);
-    const maxLines = 3;
-    for (let li = 0; li < Math.min(lines.length, maxLines); li++) {
-      let txt = lines[li];
-      if (li === maxLines - 1 && lines.length > maxLines) txt += "…";
-      ctx.fillText(txt, 12, capY + 30 + li * 16);
-    }
+    const maxLines = textOnlyMode ? 6 : 3;
+    wrapText(ctx, node.text, 12, capY + 32, CANVAS_W - 24, 18, maxLines);
+
+    yOffset += panelH + PANEL_GAP;
   }
 
   // ── Trigger download ─────────────────────────────────────────────────────────

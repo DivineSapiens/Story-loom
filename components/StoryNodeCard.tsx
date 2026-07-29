@@ -1,9 +1,72 @@
 "use client";
 
-import { memo, useCallback } from "react";
+import { memo, useCallback, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { StoryNode } from "@/lib/types";
 import NodeMenu from "./NodeMenu";
+
+// ─── Why tooltip ──────────────────────────────────────────────────────────────
+// Pure React state tooltip — avoids CSS :hover which can be unreliable inside
+// React Flow's canvas. The tooltip floats above the card using absolute positioning
+// with a fixed max-width so it never overflows the viewport edge.
+
+function WhyTooltip({ why }: { why: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    // "nopan" stops RF drag handler eating the mouse events on this button.
+    <div className="nopan relative flex items-center" style={{ pointerEvents: "all" }}>
+      <button
+        type="button"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        aria-label="Why this direction?"
+        className="flex items-center justify-center w-5 h-5 rounded-full
+                   bg-gray-800 border border-gray-600 text-gray-500
+                   hover:border-amber-500/60 hover:text-amber-400
+                   transition-colors duration-100 focus:outline-none focus-visible:ring-1
+                   focus-visible:ring-amber-500 flex-shrink-0"
+      >
+        {/* Lightbulb-style "why" icon */}
+        <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <circle cx="6" cy="5" r="3" stroke="currentColor" strokeWidth="1.3"/>
+          <path d="M4.5 8h3M5 9.5h2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+          <path d="M6 1V0.5M10 5h.5M1.5 5H1M8.5 2.5l.4-.4M3.1 2.1l-.4-.4"
+                stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+        </svg>
+      </button>
+
+      {/* Floating tooltip — rendered above the button, left-aligned, fixed width */}
+      {open && (
+        <div
+          // Stop card body click from firing when tooltip is tapped on mobile
+          onClick={(e) => e.stopPropagation()}
+          className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2
+                     w-48 rounded-xl bg-gray-800 border border-gray-700
+                     px-3 py-2.5 shadow-2xl shadow-black/60
+                     pointer-events-none"
+          style={{ animation: "tooltipIn 0.12s ease-out both" }}
+          role="tooltip"
+        >
+          {/* Arrow */}
+          <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0"
+               style={{
+                 borderLeft: "5px solid transparent",
+                 borderRight: "5px solid transparent",
+                 borderTop: "5px solid #374151",
+               }} />
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/80 mb-1">
+            Why this direction
+          </p>
+          <p className="text-[11px] leading-relaxed text-gray-300 italic">{why}</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,7 +132,7 @@ function StoryNodeCardInner({ data }: NodeProps) {
   const d = data as StoryNodeData;
   const {
     id, text, tone, why, parentId, depth, authorType,
-    isOnActivePath, isNewest, onNodeClick, onGenerateBranches, onCreateThread,
+    isOnActivePath, isNewest, isEnding, onNodeClick, onGenerateBranches, onCreateThread,
     onPruneNode, onEditNode, onInsertNode,
   } = d;
 
@@ -87,12 +150,15 @@ function StoryNodeCardInner({ data }: NodeProps) {
   );
 
   // User-authored nodes get a teal accent ring; AI nodes get the standard amber-on-active.
+  // Ending nodes get a golden "The End" ring regardless of path state.
   const isUser = authorType === "user";
-  const ringClass = isUser
-    ? "ring-2 ring-teal-500 shadow-teal-500/20 shadow-md"
-    : isOnActivePath
-      ? "ring-2 ring-amber-400 shadow-amber-400/20 shadow-lg"
-      : "ring-1 ring-gray-700 hover:ring-gray-500";
+  const ringClass = isEnding
+    ? "ring-2 ring-amber-500 shadow-amber-500/30 shadow-lg"
+    : isUser
+      ? "ring-2 ring-teal-500 shadow-teal-500/20 shadow-md"
+      : isOnActivePath
+        ? "ring-2 ring-amber-400 shadow-amber-400/20 shadow-lg"
+        : "ring-1 ring-gray-700 hover:ring-gray-500";
 
   return (
     <>
@@ -120,7 +186,15 @@ function StoryNodeCardInner({ data }: NodeProps) {
       >
         {/* Top row: tone badge (or user label) + ⋯ menu */}
         <div className="flex items-center justify-between gap-1 min-w-0">
-          {isUser ? (
+          {isEnding ? (
+            /* "THE END" badge — replaces tone badge on conclusion nodes */
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="text-[9px] font-bold uppercase tracking-widest text-amber-400/90
+                               bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
+                ✦ The End
+              </span>
+            </div>
+          ) : isUser ? (
             <div className="flex items-center gap-1.5 min-w-0">
               <svg width="11" height="11" viewBox="0 0 14 14" fill="none"
                    className="text-teal-400 flex-shrink-0" aria-hidden="true">
@@ -148,37 +222,50 @@ function StoryNodeCardInner({ data }: NodeProps) {
 
         <p className="text-[13px] leading-relaxed text-gray-100 line-clamp-5">{text}</p>
 
-        {/* Why rationale — only for AI nodes */}
-        {!isUser && why && (
-          <p className="text-[11px] text-gray-400 italic border-t border-gray-700 pt-2">
-            <span className="not-italic font-semibold text-gray-500">Why: </span>{why}
-          </p>
-        )}
-
         {/* Action row — "nopan" class is required: tells RF to pass pointer events through */}
-        <div className="mt-1 flex items-center justify-between gap-1 flex-wrap">
-          <button
-            onClick={handleGenerate}
-            className="nopan rounded-md bg-gray-800 px-2 py-1 text-[11px] font-medium
-                       text-amber-400 hover:bg-gray-700 hover:text-amber-300
-                       transition-colors duration-100 border border-gray-700 btn-interactive"
-          >
-            ＋ New directions
-          </button>
-
-          {/* "Branch a character" — only on depth >= 1 nodes */}
-          {depth >= 1 && (
+        {isEnding ? (
+          /* Ending node: no branching allowed — show a read-only note instead */
+          <div className="mt-1 flex items-center gap-1.5">
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none"
+                 className="text-amber-500/60 flex-shrink-0" aria-hidden="true">
+              <path d="M6 1v5.5M6 9v1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.2"/>
+            </svg>
+            <span className="text-[10px] text-gray-600 italic">
+              Story complete — branch from an earlier node to explore other paths.
+            </span>
+          </div>
+        ) : (
+          <div className="mt-1 flex items-center justify-between gap-1 flex-wrap">
             <button
-              onClick={handleCreateThread}
-              title="Start a character's side story from this point"
-              className="nopan rounded-md bg-gray-800 px-2 py-1 text-[10px] font-medium
-                         text-purple-400 hover:bg-gray-700 hover:text-purple-300
+              onClick={handleGenerate}
+              className="nopan rounded-md bg-gray-800 px-2 py-1 text-[11px] font-medium
+                         text-amber-400 hover:bg-gray-700 hover:text-amber-300
                          transition-colors duration-100 border border-gray-700 btn-interactive"
             >
-              ✦ Character
+              ＋ New directions
             </button>
-          )}
-        </div>
+
+            {/* Right cluster: Why tooltip + Character button */}
+            <div className="flex items-center gap-1">
+              {/* Why tooltip — only for AI nodes that have a rationale */}
+              {!isUser && why && <WhyTooltip why={why} />}
+
+              {/* "Branch a character" — only on depth >= 1 nodes */}
+              {depth >= 1 && (
+                <button
+                  onClick={handleCreateThread}
+                  title="Start a character's side story from this point"
+                  className="nopan rounded-md bg-gray-800 px-2 py-1 text-[10px] font-medium
+                             text-purple-400 hover:bg-gray-700 hover:text-purple-300
+                             transition-colors duration-100 border border-gray-700 btn-interactive"
+                >
+                  ✦ Character
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <Handle type="source" position={Position.Bottom} className="!bg-gray-600 !w-2 !h-2 !border-0" />

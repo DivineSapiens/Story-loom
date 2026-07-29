@@ -6,6 +6,18 @@ export interface BranchOption {
   tone: string;
   /** One-line rationale shown on the card, e.g. "Raises the stakes by…" */
   why: string;
+  /**
+   * When true, committing this option will mark the resulting node as the
+   * final "The End" node — no further branching is allowed from it.
+   * Only set when wrapUp mode generates a conclusion option.
+   */
+  isEnding?: boolean;
+  /**
+   * AI hint: approx how many more nodes until the story concludes.
+   * Shown as a heads-up in the branch panel ("~2 nodes to conclusion").
+   * Only present in wrapUp mode.
+   */
+  nodesRemaining?: number;
 }
 
 /** A committed node in the story tree (main tree or character thread). */
@@ -49,6 +61,14 @@ export interface StoryNode {
    * Only meaningful on thread nodes.
    */
   woven?: boolean;
+  /**
+   * True when this is the final "The End" node of a completed story arc.
+   * - No further AI branches are generated from an ending node.
+   * - The PathDrawer opens automatically when an ending node is committed.
+   * - The node is rendered with a distinct "THE END" badge in StoryNodeCard.
+   * - Branching from ancestor nodes above it is still allowed.
+   */
+  isEnding?: boolean;
 }
 
 // ─── Character Thread ─────────────────────────────────────────────────────────

@@ -74,6 +74,18 @@
   100% { transform: translateX(110vw) translateY(0); }
 }
 
+/* ── Panel reveal: fade + slight scale used by PathDrawer ───────────────── */
+@keyframes panelReveal {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* ── Tooltip pop-in: scale from 0.9 + fade ──────────────────────────────── */
+@keyframes tooltipIn {
+  0%   { opacity: 0; transform: translateX(-50%) scale(0.88) translateY(4px); }
+  100% { opacity: 1; transform: translateX(-50%) scale(1)    translateY(0); }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    ANIMATION UTILITY CLASSES
    ═════════════════════════════════════════════════════════════════════════ */

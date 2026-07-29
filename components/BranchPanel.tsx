@@ -15,7 +15,7 @@ interface BranchPanelProps {
   onSelect: (option: BranchOption) => void;
   onAddUserText: (text: string) => void;
   onToggleWrapUp: () => void;
-  /** Called when the user clicks "Try again" in the error state. */
+  /** Called when "Try again" or the ↺ refresh button is clicked. */
   onRetry: () => void;
 }
 
@@ -71,24 +71,35 @@ interface BranchCardProps {
 }
 
 function BranchCard({ option, index, onSelect }: BranchCardProps) {
+  const isEnding = Boolean(option.isEnding);
   return (
     <button
       onClick={() => onSelect(option)}
-      className="
+      className={`
         branch-card animate-card-appear
-        group flex flex-col gap-2 rounded-xl bg-gray-900 p-4 text-left
-        ring-1 ring-gray-700 hover:ring-amber-500 hover:bg-gray-800
-        cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400
-      "
+        group flex flex-col gap-2 rounded-xl p-4 text-left
+        cursor-pointer focus:outline-none transition-all duration-150
+        ${isEnding
+          ? "bg-gray-900 ring-2 ring-amber-500/60 hover:ring-amber-400 hover:bg-gray-800 col-span-2"
+          : "bg-gray-900 ring-1 ring-gray-700 hover:ring-amber-500 hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-amber-400"
+        }
+      `}
       style={{ animationDelay: `${index * 80}ms` }}
     >
       {/* Header row */}
       <div className="flex items-center justify-between gap-2">
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${toneBadgeClass(option.tone)}`}>
-          {option.tone}
-        </span>
-        <span className="text-[10px] text-gray-500 group-hover:text-amber-500 transition-colors duration-150">
-          commit →
+        {isEnding ? (
+          <span className="text-[9px] font-bold uppercase tracking-widest text-amber-400/90
+                           bg-amber-500/10 border border-amber-500/30 rounded-full px-2 py-0.5">
+            ✦ The End — Final Conclusion
+          </span>
+        ) : (
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${toneBadgeClass(option.tone)}`}>
+            {option.tone}
+          </span>
+        )}
+        <span className={`text-[10px] transition-colors duration-150 ${isEnding ? "text-amber-400/70 group-hover:text-amber-300" : "text-gray-500 group-hover:text-amber-500"}`}>
+          {isEnding ? "conclude story →" : "commit →"}
         </span>
       </div>
 
@@ -220,11 +231,34 @@ export default function BranchPanel({
   return (
     <div className="flex-shrink-0 border-t border-gray-800 bg-gray-950">
 
-      {/* ── Top bar: heading + wrap-up toggle ─────────────────────────── */}
-      <div className="flex items-center justify-between px-4 pt-3 pb-1">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-500">
-          {heading}
-        </p>
+      {/* ── Top bar: heading + refresh + wrap-up toggle ───────────────── */}
+      <div className="flex items-center justify-between px-4 pt-3 pb-1 gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 flex-shrink-0">
+            {heading}
+          </p>
+
+          {/* ↺ Refresh — shown whenever options are ready (re-roll all four suggestions) */}
+          {!isLoading && !error && options && (
+            <button
+              onClick={onRetry}
+              title="Get new suggestions"
+              className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold
+                         uppercase tracking-wide border border-gray-700 text-gray-500
+                         hover:border-amber-500 hover:text-amber-400 transition-colors duration-100
+                         flex-shrink-0"
+            >
+              {/* Circular-arrow refresh icon */}
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M10 6A4 4 0 1 1 6 2" stroke="currentColor" strokeWidth="1.4"
+                      strokeLinecap="round"/>
+                <path d="M6 0l2 2-2 2" stroke="currentColor" strokeWidth="1.4"
+                      strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Refresh
+            </button>
+          )}
+        </div>
 
         {/* Wrap-up toggle — only shown when options are ready */}
         {!isLoading && !error && options && (
@@ -233,7 +267,7 @@ export default function BranchPanel({
             title={wrapUpRequested ? "Wrapping up — click to resume" : "Ask AI to start wrapping up the story"}
             className={`
               flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold
-              uppercase tracking-wide border transition-colors duration-100
+              uppercase tracking-wide border transition-colors duration-100 flex-shrink-0
               ${wrapUpRequested
                 ? "bg-amber-500/20 border-amber-500 text-amber-400"
                 : "bg-transparent border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300"

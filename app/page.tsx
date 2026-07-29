@@ -59,6 +59,8 @@ type Action =
   | { type: "DISMISS_ARCHIVE" }
   | { type: "SET_STYLE"; styleDescription: string }
   | { type: "TOGGLE_WRAP_UP" }
+  /** Auto-opens the drawer when an ending node is committed. */
+  | { type: "OPEN_DRAWER" }
   // ── Canon summary ─────────────────────────────────────────────────────────
   | { type: "CANON_SUMMARY_PENDING" }
   | { type: "SET_CANON_SUMMARY"; summary: string }
@@ -96,7 +98,16 @@ type Action =
   /** Update text of a thread node in place. */
   | { type: "THREAD_EDIT_NODE"; threadId: string; nodeId: string; text: string }
   /** Insert a new node between afterNodeId and its children in a thread. */
-  | { type: "THREAD_INSERT_NODE"; threadId: string; afterNodeId: string; newNode: StoryNode };
+  | { type: "THREAD_INSERT_NODE"; threadId: string; afterNodeId: string; newNode: StoryNode }
+  /** Edit an existing character thread's metadata (name, backstory, relationship). */
+  | {
+      type: "EDIT_THREAD";
+      threadId: string;
+      characterName: string;
+      backstory: string;
+      relatedToThreadId?: string;
+      relationshipLabel?: string;
+    };
 
 function reducer(state: TreeState, action: Action): TreeState {
   switch (action.type) {
@@ -195,6 +206,9 @@ function reducer(state: TreeState, action: Action): TreeState {
 
     case "TOGGLE_DRAWER":
       return { ...state, drawerOpen: !state.drawerOpen };
+
+    case "OPEN_DRAWER":
+      return { ...state, drawerOpen: true };
 
     case "TOGGLE_OPENING":
       return { ...state, openingCollapsed: !state.openingCollapsed };
@@ -588,6 +602,24 @@ function reducer(state: TreeState, action: Action): TreeState {
       };
     }
 
+    case "EDIT_THREAD": {
+      const t = state.characterThreads[action.threadId];
+      if (!t) return state;
+      return {
+        ...state,
+        characterThreads: {
+          ...state.characterThreads,
+          [action.threadId]: {
+            ...t,
+            characterName:      action.characterName,
+            backstory:          action.backstory,
+            relatedToThreadId:  action.relatedToThreadId,
+            relationshipLabel:  action.relationshipLabel,
+          },
+        },
+      };
+    }
+
     default:
       return state;
   }
@@ -756,15 +788,23 @@ export default function Page() {
   }, []);
 
   // ── handleNodeClick ────────────────────────────────────────────────────────
+  // Node BODY click:
+  //   - Has existing children → show them in the branch panel (navigate existing tree).
+  //   - Is a leaf node → just SELECT it (highlight path) WITHOUT auto-fetching new branches.
+  //     New AI branches are only generated when the user explicitly clicks "＋ New directions".
   const handleNodeClick = useCallback(
     (nodeId: string) => {
       const { nodes } = stateRef.current;
       const children = nodes.filter((n) => n.parentId === nodeId);
       if (children.length > 0) {
+        // Show existing children as branch options so the user can navigate them.
         showExistingChildren(nodeId, nodes);
       } else {
+        // Leaf node — just select + highlight path. Do NOT fetch new branches.
         const path = getPath(nodes, nodeId);
         dispatch({ type: "SELECT_NODE", nodeId, pathIds: path.map((n) => n.id) });
+        // Dismiss any open branch panel from a previous node click.
+        dispatch({ type: "DISMISS_PANEL" });
       }
     },
     [showExistingChildren]
@@ -773,6 +813,9 @@ export default function Page() {
   // ── handleGenerateBranches ─────────────────────────────────────────────────
   const handleGenerateBranches = useCallback(
     (nodeId: string) => {
+      // Block generation from ending nodes — the story is complete there.
+      const node = stateRef.current.nodes.find((n) => n.id === nodeId);
+      if (node?.isEnding) return;
       fetchBranches(nodeId, stateRef.current.nodes);
       const path = getPath(stateRef.current.nodes, nodeId);
       dispatch({ type: "SELECT_NODE", nodeId, pathIds: path.map((n) => n.id) });
@@ -806,6 +849,8 @@ export default function Page() {
         siblingIndex: siblings.length,
         authorType: "ai",
         imageStatus: "idle",
+        // Propagate ending flag from the chosen option.
+        ...(option.isEnding ? { isEnding: true } : {}),
       };
       dispatch({ type: "ADD_NODE", node: newNode });
 
@@ -813,13 +858,21 @@ export default function Page() {
       const newNodes = [...nodes, newNode];
       fireSummarise(pathToText(getPath(newNodes, id)));
 
-      // Undo toast: 5 s auto-dismiss
-      const restoredOptions = (pendingOptions ?? []).map((o) => ({ ...o }));
-      setUndoToast((prev) => {
-        if (prev) clearTimeout(prev.timeoutId);
-        const timeoutId = setTimeout(() => setUndoToast(null), 5000);
-        return { nodeId: id, restoredOptions, timeoutId };
-      });
+      // If this is the ending node, auto-open the path drawer after a short delay
+      // so the reader immediately sees the full illustrated story.
+      if (option.isEnding) {
+        setTimeout(() => dispatch({ type: "OPEN_DRAWER" }), 400);
+      }
+
+      // Undo toast: 5 s auto-dismiss (suppress on ending — can't undo the end cleanly)
+      if (!option.isEnding) {
+        const restoredOptions = (pendingOptions ?? []).map((o) => ({ ...o }));
+        setUndoToast((prev) => {
+          if (prev) clearTimeout(prev.timeoutId);
+          const timeoutId = setTimeout(() => setUndoToast(null), 5000);
+          return { nodeId: id, restoredOptions, timeoutId };
+        });
+      }
     },
     [fireSummarise]
   );
@@ -1226,6 +1279,17 @@ export default function Page() {
     dispatch({ type: "THREAD_INSERT_NODE", threadId, afterNodeId, newNode });
   }, []);
 
+  // ── handleEditThread ──────────────────────────────────────────────────────
+  const handleEditThread = useCallback((
+    threadId: string,
+    characterName: string,
+    backstory: string,
+    relatedToThreadId?: string,
+    relationshipLabel?: string
+  ) => {
+    dispatch({ type: "EDIT_THREAD", threadId, characterName, backstory, relatedToThreadId, relationshipLabel });
+  }, []);
+
   // ── Jump handlers (Universe → Tree) ───────────────────────────────────────
   const handleJumpToMainNode = useCallback((nodeId: string) => {
     handleNodeClick(nodeId);
@@ -1614,6 +1678,7 @@ export default function Page() {
             allThreads={characterThreads}
             onJumpToMainNode={handleJumpToMainNode}
             onJumpToThreadNode={handleJumpToThreadNode}
+            onEditThread={handleEditThread}
           />
         </div>
       )}
@@ -1660,6 +1725,34 @@ export default function Page() {
           )}
         </div>
       )}
+
+      {/* ── Wrap-up heads-up banner — shown when options arrive in wrapUp mode ── */}
+      {activeView === "tree" && wrapUpRequested && !isThreadContext && panelOptions && !panelLoading && (
+        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 border-t border-amber-900/40 bg-amber-950/30">
+          {/* Hourglass icon */}
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" className="flex-shrink-0 text-amber-400" aria-hidden="true">
+            <path d="M2 1h8M2 11h8M3 1v2l3 3-3 3v2M9 1v2L6 6l3 3v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span className="text-[10px] text-amber-400/80 font-medium">
+            {(() => {
+              // Find the minimum nodesRemaining across non-ending options.
+              const nonEnding = panelOptions.filter((o) => !o.isEnding);
+              const hasEnding = panelOptions.some((o) => o.isEnding);
+              const minRemaining = nonEnding.reduce(
+                (min, o) => (o.nodesRemaining != null && o.nodesRemaining < min ? o.nodesRemaining : min),
+                999
+              );
+              if (hasEnding) {
+                return `Story conclusion ready — one of the options below ends the story. Others lead ~${minRemaining === 999 ? 1 : minRemaining + 1} node${minRemaining !== 0 ? "s" : ""} from the end.`;
+              }
+              return minRemaining < 999
+                ? `Wrapping up — ~${minRemaining} more node${minRemaining !== 1 ? "s" : ""} to conclusion.`
+                : "Wrapping up — conclusion approaching.";
+            })()}
+          </span>
+        </div>
+      )}
+
       {activeView === "tree" && (
         <BranchPanel
           options={panelOptions}

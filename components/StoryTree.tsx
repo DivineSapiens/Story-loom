@@ -311,7 +311,7 @@ function StoryTreeInner({
       fitViewOptions={{ padding: 0.18 }}
       minZoom={0.15}
       maxZoom={2}
-      nodesDraggable={false}
+      nodesDraggable={true}
       nodesConnectable={false}
       elementsSelectable={false}
       onPaneClick={onPaneClick}

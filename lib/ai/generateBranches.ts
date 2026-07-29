@@ -18,10 +18,44 @@ Example output format (do not copy these values):
   {"text":"...", "tone":"Dark",       "why":"..."}
 ]`;
 
-const WRAP_UP_ADDENDUM = `\n\nIMPORTANT: The writer wants to start wrapping up the story. Bias all 4 directions toward resolving or concluding the narrative within the next 1–3 exchanges — avoid opening major new threads or introducing new characters.`;
+// ─── Wrap-up system instruction ───────────────────────────────────────────────
+// In wrap-up mode we replace the standard 4-branch prompt with a dedicated one
+// that:
+//   1. Informs the writer ~how many nodes remain before conclusion (nodesRemaining).
+//   2. Flags exactly ONE option as the final "The End" node (isEnding: true).
+//   3. Keeps the other 3 options as penultimate steps leading naturally to a close.
+//
+// The JSON schema is extended:
+//   "nodesRemaining" — integer 1 or 2 (for all non-ending options)
+//   "isEnding"       — boolean true ONLY on the conclusion option (omit on others)
+
+const WRAP_UP_SYSTEM = `You are a creative writing partner helping to conclude a story.
+The writer has asked to wrap up the story. Propose exactly 4 directions:
+  - 3 directions that are penultimate steps (each ~1–2 exchanges from the end)
+  - 1 direction that IS the final, conclusive ending of the story
+
+Respond with ONLY a valid JSON array — no prose, no markdown, no code fences.
+Each element must have exactly these keys:
+  "text"           — 1–3 sentence continuation
+  "tone"           — a single descriptive word (e.g. Hopeful, Bittersweet, Triumphant, Melancholy, Peaceful, Dark)
+  "why"            — one sentence explaining why this direction works as a conclusion
+  "nodesRemaining" — integer: 1 or 2 for penultimate options, 0 for the ending option
+  "isEnding"       — boolean: true ONLY on the single conclusive ending option, omit on all others
+
+The ending option ("isEnding": true) must feel like a genuine, satisfying conclusion —
+it should resolve the main tension and give a sense of finality. Write it in 2–3 sentences.
+The story's final line should feel like the last line of a novel.
+
+Example output (do not copy these values):
+[
+  {"text":"...", "tone":"Hopeful",     "why":"...", "nodesRemaining": 2},
+  {"text":"...", "tone":"Bittersweet", "why":"...", "nodesRemaining": 1},
+  {"text":"...", "tone":"Melancholy",  "why":"...", "nodesRemaining": 2},
+  {"text":"...", "tone":"Triumphant",  "why":"...", "nodesRemaining": 0, "isEnding": true}
+]`;
 
 function buildPrompt(pathText: string, wrapUp = false): string {
-  const instruction = wrapUp ? SYSTEM_INSTRUCTION + WRAP_UP_ADDENDUM : SYSTEM_INSTRUCTION;
+  const instruction = wrapUp ? WRAP_UP_SYSTEM : SYSTEM_INSTRUCTION;
   return `${instruction}\n\nStory so far:\n${pathText}`;
 }
 
@@ -30,8 +64,15 @@ function buildPrompt(pathText: string, wrapUp = false): string {
 /**
  * Strips markdown code fences the model sometimes wraps JSON in, then parses
  * and validates the expected shape. Returns null on any failure.
+ * Extended fields (isEnding, nodesRemaining) are optional — tolerate their absence.
  */
-function parseResponse(raw: string): Array<{ text: string; tone: string; why: string }> | null {
+function parseResponse(raw: string): Array<{
+  text: string;
+  tone: string;
+  why: string;
+  isEnding?: boolean;
+  nodesRemaining?: number;
+}> | null {
   try {
     const cleaned = raw
       .trim()
@@ -53,7 +94,13 @@ function parseResponse(raw: string): Array<{ text: string; tone: string; why: st
       }
     }
 
-    return parsed as Array<{ text: string; tone: string; why: string }>;
+    return parsed as Array<{
+      text: string;
+      tone: string;
+      why: string;
+      isEnding?: boolean;
+      nodesRemaining?: number;
+    }>;
   } catch {
     return null;
   }
@@ -80,11 +127,12 @@ async function generateBranchesFromGroq(pathText: string, wrapUp = false): Promi
     body: JSON.stringify({
       model: GROQ_MODEL,
       temperature: 0.85,
-      max_tokens: 900,
+      max_tokens: 1100,
       // response_format forces the model to emit valid JSON — same as OpenAI.
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: wrapUp ? SYSTEM_INSTRUCTION + WRAP_UP_ADDENDUM : SYSTEM_INSTRUCTION },
+        // In wrapUp mode use the dedicated WRAP_UP_SYSTEM prompt, not the standard one.
+        { role: "system", content: wrapUp ? WRAP_UP_SYSTEM : SYSTEM_INSTRUCTION },
         { role: "user",   content: `Story so far:\n${pathText}` },
       ],
     }),
@@ -117,7 +165,14 @@ async function generateBranchesFromGroq(pathText: string, wrapUp = false): Promi
   const parsed = parseResponse(toParse);
   if (!parsed) throw new Error(`Could not parse Groq response: ${raw.slice(0, 200)}`);
 
-  return parsed.slice(0, 4).map((b) => ({ id: crypto.randomUUID(), ...b }));
+  return parsed.slice(0, 4).map((b) => ({
+    id: crypto.randomUUID(),
+    text: b.text,
+    tone: b.tone,
+    why: b.why,
+    ...(b.isEnding        ? { isEnding: true }                    : {}),
+    ...(b.nodesRemaining != null ? { nodesRemaining: b.nodesRemaining } : {}),
+  }));
 }
 
 // ─── INACTIVE PROVIDER: Google Gemini (429 limit:0 on free tier) ─────────────
@@ -135,7 +190,7 @@ async function generateBranchesFromGemini(pathText: string, wrapUp = false): Pro
 
   const body = {
     systemInstruction: {
-      parts: [{ text: wrapUp ? SYSTEM_INSTRUCTION + WRAP_UP_ADDENDUM : SYSTEM_INSTRUCTION }],
+      parts: [{ text: wrapUp ? WRAP_UP_SYSTEM : SYSTEM_INSTRUCTION }],
     },
     contents: [
       {

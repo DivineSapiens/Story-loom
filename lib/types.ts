@@ -64,6 +64,12 @@ export interface TreeState {
   nodes: StoryNode[];
   /** Null when the branch panel is idle (no pending options to display). */
   pendingOptions: BranchOption[] | null;
+  /**
+   * Set when the last branch-generation API call failed.
+   * Shown as a visible error state in the branch panel.
+   * Cleared whenever a new generation starts (SET_LOADING) or succeeds (SET_OPTIONS).
+   */
+  branchError: string | null;
   /** The currently selected/focused node id. */
   selectedNodeId: string | null;
   /** Ordered list of node ids from root to the selected node. Drives path highlighting. */

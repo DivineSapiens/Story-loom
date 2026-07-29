@@ -1,6 +1,6 @@
 import type { BranchOption } from "../types";
 
-// ─── Shared system prompt ─────────────────────────────────────────────────────
+// ─── Shared system prompt (used by ALL providers) ─────────────────────────────
 
 const SYSTEM_INSTRUCTION = `You are a creative writing partner.
 Given the story so far, propose exactly 3 different ways the story could continue.
@@ -21,40 +21,14 @@ function buildPrompt(pathText: string): string {
   return `${SYSTEM_INSTRUCTION}\n\nStory so far:\n${pathText}`;
 }
 
-// ─── Watsonx client (lazy-initialised, singleton) ─────────────────────────────
-
-let _client: import("@ibm-cloud/watsonx-ai").WatsonXAI | null = null;
-
-function getClient(): import("@ibm-cloud/watsonx-ai").WatsonXAI {
-  if (_client) return _client;
-
-  // Dynamic require so this module stays importable in environments that lack
-  // the SDK (the stub path still works when credentials aren't set).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { WatsonXAI } = require("@ibm-cloud/watsonx-ai") as typeof import("@ibm-cloud/watsonx-ai");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { IamAuthenticator } = require("ibm-cloud-sdk-core") as typeof import("ibm-cloud-sdk-core");
-
-  const region = process.env.WATSONX_REGION ?? "us-south";
-
-  _client = WatsonXAI.newInstance({
-    authenticator: new IamAuthenticator({ apikey: process.env.WATSONX_API_KEY! }),
-    serviceUrl: `https://${region}.ml.cloud.ibm.com`,
-    version: "2024-05-31",
-  });
-
-  return _client;
-}
-
-// ─── Parse helpers ────────────────────────────────────────────────────────────
+// ─── Shared response parser (used by ALL providers) ───────────────────────────
 
 /**
- * Strips markdown code fences the model sometimes wraps JSON in, then parses.
- * Returns null on any failure so the caller can fall back to the stub.
+ * Strips markdown code fences the model sometimes wraps JSON in, then parses
+ * and validates the expected shape. Returns null on any failure.
  */
 function parseResponse(raw: string): Array<{ text: string; tone: string; why: string }> | null {
   try {
-    // Strip ```json … ``` or ``` … ``` wrappers if present.
     const cleaned = raw
       .trim()
       .replace(/^```(?:json)?\s*/i, "")
@@ -64,7 +38,6 @@ function parseResponse(raw: string): Array<{ text: string; tone: string; why: st
     const parsed = JSON.parse(cleaned);
     if (!Array.isArray(parsed) || parsed.length === 0) return null;
 
-    // Validate each element has the required keys.
     for (const item of parsed) {
       if (
         typeof item !== "object" ||
@@ -82,11 +55,151 @@ function parseResponse(raw: string): Array<{ text: string; tone: string; why: st
   }
 }
 
-// ─── Real watsonx call ────────────────────────────────────────────────────────
+// ─── ACTIVE PROVIDER: Groq ───────────────────────────────────────────────────
+// OpenAI-compatible endpoint — plain fetch, no extra SDK.
+// Model: llama-3.3-70b-versatile  (generous free tier, fast, strong JSON output).
+// To switch providers change the single marked line in generateBranches() below.
+
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL   = "llama-3.3-70b-versatile";
+
+async function generateBranchesFromGroq(pathText: string): Promise<BranchOption[]> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY is not set");
+
+  const res = await fetch(GROQ_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      temperature: 0.85,
+      max_tokens: 700,
+      // response_format forces the model to emit valid JSON — same as OpenAI.
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: SYSTEM_INSTRUCTION },
+        { role: "user",   content: `Story so far:\n${pathText}` },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.statusText);
+    throw new Error(`Groq API error ${res.status}: ${errText}`);
+  }
+
+  const json = await res.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+
+  const raw = json.choices?.[0]?.message?.content?.trim() ?? "";
+  if (!raw) throw new Error("Empty response from Groq");
+
+  // json_object mode returns a single object, not an array — handle both shapes.
+  // Some models wrap the array under a key; unwrap if needed.
+  let toParse = raw;
+  try {
+    const probe = JSON.parse(raw);
+    if (!Array.isArray(probe)) {
+      // Find the first array value inside the object.
+      const arrayValue = Object.values(probe).find(Array.isArray);
+      if (arrayValue) toParse = JSON.stringify(arrayValue);
+    }
+  } catch { /* let parseResponse handle it */ }
+
+  const parsed = parseResponse(toParse);
+  if (!parsed) throw new Error(`Could not parse Groq response: ${raw.slice(0, 200)}`);
+
+  return parsed.slice(0, 3).map((b) => ({ id: crypto.randomUUID(), ...b }));
+}
+
+// ─── INACTIVE PROVIDER: Google Gemini (429 limit:0 on free tier) ─────────────
+// To re-enable: set GEMINI_API_KEY in .env.local and change the provider swap
+// line in generateBranches() to call generateBranchesFromGemini.
+
+const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+
+async function generateBranchesFromGemini(pathText: string): Promise<BranchOption[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
+
+  const url = `${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+
+  const body = {
+    // systemInstruction keeps the directive separate from the user turn,
+    // which gives Gemini a cleaner signal to stay in JSON-only mode.
+    systemInstruction: {
+      parts: [{ text: SYSTEM_INSTRUCTION }],
+    },
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: `Story so far:\n${pathText}` }],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.85,
+      topP: 0.9,
+      maxOutputTokens: 700,
+      // Gemini supports JSON mode — forces the model to emit valid JSON.
+      responseMimeType: "application/json",
+    },
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => res.statusText);
+    throw new Error(`Gemini API error ${res.status}: ${errText}`);
+  }
+
+  const json = await res.json() as {
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string }> };
+    }>;
+  };
+
+  const raw = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  if (!raw) throw new Error("Empty response from Gemini");
+
+  const parsed = parseResponse(raw);
+  if (!parsed) throw new Error(`Could not parse Gemini response: ${raw.slice(0, 200)}`);
+
+  // Take exactly 3 (model may occasionally return more).
+  return parsed.slice(0, 3).map((b) => ({ id: crypto.randomUUID(), ...b }));
+}
+
+// ─── INACTIVE PROVIDER: watsonx / Granite — swap back in once IBM auth is resolved
+// To re-enable: set WATSONX_API_KEY + WATSONX_PROJECT_ID in .env.local and change
+// the provider swap line in generateBranches() to call generateBranchesFromWatsonx.
+
+let _watsonxClient: import("@ibm-cloud/watsonx-ai").WatsonXAI | null = null;
+
+function getWatsonxClient(): import("@ibm-cloud/watsonx-ai").WatsonXAI {
+  if (_watsonxClient) return _watsonxClient;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { WatsonXAI } = require("@ibm-cloud/watsonx-ai") as typeof import("@ibm-cloud/watsonx-ai");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { IamAuthenticator } = require("ibm-cloud-sdk-core") as typeof import("ibm-cloud-sdk-core");
+  const region = process.env.WATSONX_REGION ?? "us-south";
+  _watsonxClient = WatsonXAI.newInstance({
+    authenticator: new IamAuthenticator({ apikey: process.env.WATSONX_API_KEY! }),
+    serviceUrl: `https://${region}.ml.cloud.ibm.com`,
+    version: "2024-05-31",
+  });
+  return _watsonxClient;
+}
 
 async function generateBranchesFromWatsonx(pathText: string): Promise<BranchOption[]> {
-  const client = getClient();
-
+  const client = getWatsonxClient();
   const response = await client.generateText({
     modelId: process.env.WATSONX_MODEL_ID ?? "ibm/granite-3-8b-instruct",
     projectId: process.env.WATSONX_PROJECT_ID!,
@@ -99,39 +212,32 @@ async function generateBranchesFromWatsonx(pathText: string): Promise<BranchOpti
       stop_sequences: ["\n\n\n"],
     },
   });
-
   const raw = response.result.results?.[0]?.generated_text?.trim() ?? "";
   if (!raw) throw new Error("Empty response from watsonx");
-
   const parsed = parseResponse(raw);
   if (!parsed) throw new Error(`Could not parse watsonx response: ${raw.slice(0, 200)}`);
-
-  // Take exactly 3 (model might sometimes return more/fewer).
   return parsed.slice(0, 3).map((b) => ({ id: crypto.randomUUID(), ...b }));
 }
 
-// ─── Stub (used when no credentials are configured) ──────────────────────────
+// ─── Stub (used when no live credentials are configured) ──────────────────────
 
 function generateBranchesStub(_pathText: string): BranchOption[] {
   return [
     {
       id: crypto.randomUUID(),
-      text:
-        "A sharp crack of thunder split the silence, and the lantern in Mara's hand guttered out. In the sudden dark, something cold pressed against her wrist — fingers, unmistakably fingers — though she was certain she was alone.",
+      text: "A sharp crack of thunder split the silence, and the lantern in Mara's hand guttered out. In the sudden dark, something cold pressed against her wrist — fingers, unmistakably fingers — though she was certain she was alone.",
       tone: "Tense",
       why: "Raises immediate physical stakes and introduces an unknown threat without revealing too much.",
     },
     {
       id: crypto.randomUUID(),
-      text:
-        "The old cartographer spread his map across the table, and Mara realised with a jolt that the village marked at its centre — the one she had been searching for her whole life — was the very village she was standing in.",
+      text: "The old cartographer spread his map across the table, and Mara realised with a jolt that the village marked at its centre — the one she had been searching for her whole life — was the very village she was standing in.",
       tone: "Revelatory",
       why: "Reframes everything the reader knows so far and gives Mara (and the reader) a reason to press forward.",
     },
     {
       id: crypto.randomUUID(),
-      text:
-        "\"You look exactly like her,\" the innkeeper said softly, setting down a cup of tea. He did not elaborate, and his eyes were already somewhere far away, somewhere that looked a great deal like grief.",
+      text: "\"You look exactly like her,\" the innkeeper said softly, setting down a cup of tea. He did not elaborate, and his eyes were already somewhere far away, somewhere that looked a great deal like grief.",
       tone: "Melancholy",
       why: "Introduces a mysterious connection to another character and opens an emotional thread to pull on.",
     },
@@ -141,30 +247,29 @@ function generateBranchesStub(_pathText: string): BranchOption[] {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Given the story text accumulated along the current path, returns exactly
- * 3 branch options the story could take next.
+ * Returns exactly 3 branch options for the current story path.
  *
- * Uses watsonx/Granite when WATSONX_API_KEY and WATSONX_PROJECT_ID are set,
- * otherwise falls back to hardcoded stub data so the UI works without credentials.
+ * ACTIVE PROVIDER: Groq (llama-3.3-70b-versatile)
+ *
+ * Credential logic:
+ *   - No GROQ_API_KEY set → stub data (app still works for demo purposes).
+ *   - GROQ_API_KEY set    → real Groq call; errors propagate to the UI.
+ *
+ * ── PROVIDER SWAP LINE ── change the function called at the bottom of this
+ * function to switch providers:
+ *   Groq    (active):   generateBranchesFromGroq
+ *   Gemini  (inactive): generateBranchesFromGemini   needs GEMINI_API_KEY
+ *   watsonx (inactive): generateBranchesFromWatsonx  needs WATSONX_API_KEY + PROJECT_ID
  */
 export async function generateBranches(pathText: string): Promise<BranchOption[]> {
-  const hasCredentials =
-    process.env.WATSONX_API_KEY &&
-    process.env.WATSONX_API_KEY !== "your-watsonx-api-key-here" &&
-    process.env.WATSONX_PROJECT_ID &&
-    process.env.WATSONX_PROJECT_ID !== "your-watsonx-project-id-here";
+  const hasGroqKey =
+    process.env.GROQ_API_KEY &&
+    process.env.GROQ_API_KEY !== "your-groq-api-key-here";
 
-  if (!hasCredentials) {
-    // No credentials configured — use stub so the app runs without setup.
-    console.warn("[generateBranches] No watsonx credentials found — using stub data.");
+  if (!hasGroqKey) {
+    console.warn("[generateBranches] No GROQ_API_KEY — using stub data.");
     return generateBranchesStub(pathText);
   }
 
-  try {
-    return await generateBranchesFromWatsonx(pathText);
-  } catch (err) {
-    // On any error, log and fall back to stub so the UI never breaks.
-    console.error("[generateBranches] watsonx call failed, falling back to stub:", err);
-    return generateBranchesStub(pathText);
-  }
+  return generateBranchesFromGroq(pathText); // ← PROVIDER SWAP LINE
 }

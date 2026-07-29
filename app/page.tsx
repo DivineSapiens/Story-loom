@@ -14,6 +14,7 @@ import BackgroundScene from "@/components/BackgroundScene";
 const INITIAL_STATE: TreeState = {
   nodes: [],
   pendingOptions: null,
+  branchError: null,
   selectedNodeId: null,
   activePathIds: [],
   isLoading: false,
@@ -33,6 +34,7 @@ type Action =
   | { type: "UNDO_NODE"; nodeId: string; restoredOptions: BranchOption[] }
   | { type: "SELECT_NODE"; nodeId: string; pathIds: string[] }
   | { type: "SET_OPTIONS"; options: BranchOption[] }
+  | { type: "SET_ERROR"; message: string }
   | { type: "SET_LOADING" }
   | { type: "SHOW_EXISTING_CHILDREN"; options: BranchOption[]; nodeId: string; pathIds: string[] }
   | { type: "TOGGLE_DRAWER" }
@@ -97,10 +99,13 @@ function reducer(state: TreeState, action: Action): TreeState {
       };
 
     case "SET_OPTIONS":
-      return { ...state, pendingOptions: action.options, isLoading: false };
+      return { ...state, pendingOptions: action.options, branchError: null, isLoading: false };
+
+    case "SET_ERROR":
+      return { ...state, branchError: action.message, pendingOptions: null, isLoading: false };
 
     case "SET_LOADING":
-      return { ...state, isLoading: true, pendingOptions: null };
+      return { ...state, isLoading: true, pendingOptions: null, branchError: null };
 
     case "SHOW_EXISTING_CHILDREN":
       return {
@@ -203,13 +208,18 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pathText }),
       });
-      if (!res.ok) throw new Error("API error");
-      const data = (await res.json()) as { branches: BranchOption[] };
-      dispatch({ type: "SET_OPTIONS", options: data.branches });
+      // Read the body regardless of status so we can surface the error detail.
+      const data = await res.json() as { branches?: BranchOption[]; error?: string; detail?: string };
+      if (!res.ok) {
+        const msg = data.detail ?? data.error ?? `Server error ${res.status}`;
+        dispatch({ type: "SET_ERROR", message: msg });
+        return;
+      }
+      dispatch({ type: "SET_OPTIONS", options: data.branches ?? [] });
 
       // ── Prefetch 512px preview images for all 3 branches in parallel ──────
       const { styleDescription } = stateRef.current;
-      data.branches.forEach((branch) => {
+      (data.branches ?? []).forEach((branch) => {
         const proxyNode = { id: branch.id, text: branch.text, tone: branch.tone } as StoryNode;
         const previewUrl = buildImageUrl(proxyNode, styleDescription, 512);
         const img = new Image();
@@ -218,8 +228,9 @@ export default function Page() {
         };
         img.src = previewUrl;
       });
-    } catch {
-      dispatch({ type: "SET_OPTIONS", options: [] });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error — could not reach the server.";
+      dispatch({ type: "SET_ERROR", message: msg });
     }
   }, []);
 
@@ -452,7 +463,7 @@ export default function Page() {
   }, [showExistingChildren]);
 
   // ── Derived values ─────────────────────────────────────────────────────────
-  const { nodes, pendingOptions, isLoading, drawerOpen, openingCollapsed,
+  const { nodes, pendingOptions, branchError, isLoading, drawerOpen, openingCollapsed,
           activePathIds, pendingReset, previousTree } = state;
 
   const hasTree = nodes.length > 0;
@@ -801,7 +812,12 @@ export default function Page() {
       <BranchPanel
         options={pendingOptions}
         isLoading={isLoading}
+        error={branchError}
         onSelect={handleSelectBranch}
+        onRetry={() => {
+          const { selectedNodeId, nodes: currentNodes } = stateRef.current;
+          if (selectedNodeId) fetchBranches(selectedNodeId, currentNodes);
+        }}
       />
 
       {/* ── Side drawer ───────────────────────────────────────────────── */}

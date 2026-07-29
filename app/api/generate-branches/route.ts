@@ -24,6 +24,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const branches = await generateBranches(pathText);
-  return NextResponse.json({ branches });
+  try {
+    const branches = await generateBranches(pathText);
+    return NextResponse.json({ branches });
+  } catch (err) {
+    // Extract the most useful message from whatever the SDK threw.
+    const detail =
+      err instanceof Error
+        ? err.message
+        : typeof err === "string"
+          ? err
+          : "Unknown error from watsonx";
+
+    console.error("[/api/generate-branches] watsonx error:", detail);
+    return NextResponse.json({ error: "watsonx call failed", detail }, { status: 500 });
+  }
 }

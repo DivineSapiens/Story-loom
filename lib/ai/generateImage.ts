@@ -18,7 +18,7 @@ function toneModifier(tone: string): string {
 }
 
 // ─── Style chip → rich visual descriptor ─────────────────────────────────────
-// Pollinations' flux model responds well to detailed painterly descriptors.
+// FLUX.1-schnell responds well to detailed painterly descriptors.
 // Short labels like "Manga" produce near-identical results; full art-direction
 // prompts produce strongly distinct outputs.
 
@@ -48,36 +48,34 @@ const STYLE_DESCRIPTORS: Record<string, string> = {
 function resolveStyle(styleDescription: string): string {
   const trimmed = styleDescription.trim();
   if (!trimmed) {
-    // Default: rich general comic style rather than a vague label
     return (
       "detailed digital comic book illustration, expressive line art, "
       + "cinematic colour grading, warm atmospheric lighting"
     );
   }
-  // If it matches one of our preset chips exactly, expand it to the full descriptor.
   if (Object.prototype.hasOwnProperty.call(STYLE_DESCRIPTORS, trimmed)) {
     return STYLE_DESCRIPTORS[trimmed];
   }
-  // Free-text custom style — pass through as-is but append a quality booster.
   return `${trimmed}, highly detailed, cinematic, professional illustration quality`;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Maximum node text characters before truncation (keeps URLs reasonable). */
+/** Maximum node text characters used in the prompt (keeps it focused). */
 const MAX_TEXT_CHARS = 180;
 
 // ─── Deterministic seed from node id ─────────────────────────────────────────
 
 /**
  * Derives a stable unsigned 32-bit integer from a string via djb2 hash.
- * Same input always → same output, no external deps.
+ * Same input always → same output; used so the same node always generates
+ * the same image (cache-friendly).
  */
-function hashId(id: string): number {
+export function hashId(id: string): number {
   let h = 5381;
   for (let i = 0; i < id.length; i++) {
     h = ((h << 5) + h) ^ id.charCodeAt(i);
-    h = h >>> 0; // keep unsigned 32-bit
+    h = h >>> 0;
   }
   return h;
 }
@@ -85,44 +83,26 @@ function hashId(id: string): number {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Builds a Pollinations.ai image URL for a committed story node.
- *
- * Key improvements over the previous version:
- *  - Uses model=flux which is strongly style-sensitive (vs the default model
- *    that ignores short style tags and produces near-identical outputs).
- *  - Style chip names are expanded to rich art-direction descriptors so that
- *    "Manga", "Watercolor storybook" etc. produce genuinely different aesthetics.
- *  - enhance=true lets Pollinations internally improve the prompt coherence.
+ * Builds the text prompt to send to /api/generate-image for a committed
+ * story node.
  *
  * Prompt structure:
  *   {scene description} — {expanded style descriptor}, {tone lighting modifier}
  *
- * Deterministic: same (node, styleDescription) → same URL → browser cache hit.
- *
  * @param node             The committed StoryNode to illustrate.
  * @param styleDescription User-supplied visual style (chip label or free text).
- * @param size             Image dimensions in pixels (default 768).
  */
-export function buildImageUrl(
+export function buildImagePrompt(
   node: StoryNode,
-  styleDescription: string,
-  size: 512 | 768 = 768
+  styleDescription: string
 ): string {
   const truncated =
     node.text.length > MAX_TEXT_CHARS
       ? node.text.slice(0, MAX_TEXT_CHARS).trimEnd() + "…"
       : node.text;
 
-  const style   = resolveStyle(styleDescription);
+  const style    = resolveStyle(styleDescription);
   const lighting = toneModifier(node.tone);
 
-  // Scene subject first, then style, then lighting — this ordering gives flux
-  // the best signal-to-noise ratio for style adherence.
-  const prompt = `${truncated} — ${style}, ${lighting}`;
-  const seed   = hashId(node.id);
-
-  return (
-    `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}` +
-    `?width=${size}&height=${size}&seed=${seed}&nologo=true&model=flux&enhance=true`
-  );
+  return `${truncated} — ${style}, ${lighting}`;
 }

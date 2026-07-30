@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Story Loom",
-  description: "An AI-powered collaborative story branching tool",
+  title: "fAIrytalee",
+  description: "An AI-powered collaborative story branching experience",
 };
 
 export default function RootLayout({

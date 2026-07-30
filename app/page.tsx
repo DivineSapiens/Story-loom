@@ -1362,8 +1362,8 @@ export default function Page() {
           className={`text-lg font-bold tracking-tight flex-shrink-0 ${hasTree ? "cursor-pointer" : ""}`}
           title={hasTree ? "New story" : undefined}
         >
-          <span className="text-amber-400">Story</span>
-          <span className="text-gray-100"> Loom</span>
+          <span className="text-amber-400">fAIry</span>
+          <span className="text-gray-100">talee</span>
         </h1>
 
         {/* ── View toggle tabs ──────────────────────────────────────────── */}

@@ -1,99 +1,135 @@
-# Story Loom
+# fAIrytalee
 
-An AI-powered collaborative story branching tool. Write an opening, receive three AI-generated directions the story could take (each with a rationale), pick one — and branch again from any node in the tree, not just the latest.
+An AI-powered collaborative story branching experience. Write an opening, receive four AI-generated directions the story could take (each with a tone and a "Why:" rationale), pick one — and branch again from **any** node in the tree, not just the latest.
 
 ## Quick start
 
 ```bash
 npm install
-npm run dev
+npx next dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-The app works immediately with built-in stub data. To use real AI, see **Connecting watsonx / Granite** below.
+The app works immediately in demo mode with built-in stub data. Add credentials to enable real AI generation — see **Credentials** below.
+
+---
 
 ## How to use
 
-1. **Write your opening** in the text box and press **Begin story** (or ⌘ Enter).
-2. Three branch cards appear at the bottom — each shows a continuation, a tone badge, and a **Why:** rationale.
+1. **Write your opening** in the text box, optionally pick a visual style chip, and press **Begin story** (or `Ctrl/⌘ + Enter`).
+2. Four branch cards appear at the bottom — each shows a continuation, a tone badge, and a **Why:** rationale explaining the creative direction.
 3. **Click a card** to commit it as a new node. The root-to-node path highlights in amber.
-4. **Three interaction modes from any node on the canvas:**
-   - **Click the node body** — if it already has children, those children reappear as the branch panel (no API call). If it has no children, it just selects the node and updates the active path.
-   - **Click "＋ New directions"** inside a node — always generates a fresh set of AI branch options for that node, regardless of existing children.
-   - **Click a branch card** — commits the chosen option as a new child node.
-5. **Read this path** (top-right button) slides open a drawer with the full story from root to the selected node, displayed as a printed comic strip. Use **Copy** to grab the plain text.
-6. **✏ Edit opening** (top-right, after the tree starts) re-expands the opening textarea. Re-submitting will show a confirmation banner before clearing the tree; the previous tree is archived and can be restored.
-7. **← Back** (top-left, when a non-root node is selected) navigates up to the parent node.
-8. **Visual style** — pick a chip (Watercolor storybook, Noir comic, Pop art, Cute cartoon, Manga) or type a custom style. Each node gets an illustrated panel in that style via Pollinations.ai.
+4. **Three ways to interact with any node on the canvas:**
+   - **Click the node body** — selects the node and highlights its path. If the node already has children, those children appear as branch options (no API call).
+   - **Click `＋ New directions`** — always generates a fresh set of AI branches for that node, regardless of existing children.
+   - **Click `✦ Character`** (depth ≥ 1) — opens the Create Character modal to start a side-story thread from that point.
+5. **Read this path** (top-right) slides open a drawer showing the full story as a comic strip, with AI-generated illustrations per panel. Use **Copy** to grab the plain text or **↓ Save** to download as a PNG comic.
+6. **Logo click** — when a tree exists, clicking `fAIrytalee` in the top bar prompts to start a new story (the previous tree is archived and can be restored).
+7. **Wrap up story** toggle in the branch panel — asks the AI to propose directions that converge toward an ending, including one `✦ The End` conclusive option.
+8. **✦ Universe** tab — a visual graph of all character threads, their relationships, and where each character appears in the main story.
 
-## Connecting watsonx / Granite
+---
 
-The app auto-detects credentials at startup. Without them it uses safe stub data; with them it calls `ibm/granite-3-8b-instruct` (or the model you choose).
+## Credentials
 
-### 1 — Create `.env.local`
+All credentials live in `.env.local` — never committed, never sent to the browser.
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-Then fill in your real values:
+### watsonx / IBM Granite (story generation)
 
 ```env
-WATSONX_API_KEY=<your IBM Cloud IAM API key>
-WATSONX_PROJECT_ID=<your watsonx.ai project id>
-
-# Optional — defaults shown:
-WATSONX_REGION=us-south          # eu-de | eu-gb | jp-tok | au-syd
+WATSONX_API_KEY=<IBM Cloud IAM API key>
+WATSONX_PROJECT_ID=<watsonx.ai project ID>
+WATSONX_REGION=us-south
 WATSONX_MODEL_ID=ibm/granite-3-8b-instruct
 ```
 
-### 2 — Restart the dev server
+**Getting the keys:**
+1. **API key** — [cloud.ibm.com/iam/apikeys](https://cloud.ibm.com/iam/apikeys) → Create IBM Cloud API key (must be an IAM key — not a service credentials `ApiKey-…` key).
+2. **Project ID** — [dataplatform.cloud.ibm.com/projects](https://dataplatform.cloud.ibm.com/projects) → your project → Manage → General.
+3. Ensure **Watson Machine Learning** is associated with the project (Manage → Services & integrations).
 
-```bash
-npm run dev
+Without `WATSONX_API_KEY`, the app falls back to Groq (`GROQ_API_KEY`) and then to built-in stub data.
+
+### Hugging Face (image generation — optional)
+
+```env
+HUGGINGFACE_TOKEN=hf_…
 ```
 
-The server logs `[generateBranches] No watsonx credentials found — using stub data.` when the stub is active, so you can confirm the switch. The API key is only ever read server-side (inside `/api/generate-branches`) — it is never sent to the browser.
+Get a free token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — scope: *Make calls to the serverless Inference API*.
 
-### Credential sources
+Without this token, images fall back to **Pollinations.ai** (server-side fetch, no key required). If Pollinations is also unreachable, panels display as text-only.
 
-The SDK supports three ways to supply credentials (in priority order):
+### Groq (text fallback — optional)
 
-| Method | How |
-|--------|-----|
-| `.env.local` | `WATSONX_API_KEY` + `WATSONX_PROJECT_ID` (recommended for local dev) |
-| Environment variables | Same names, set at the OS/container level |
-| `ibm-credentials.env` file | Standard IBM SDK credentials file in the project root |
+```env
+GROQ_API_KEY=gsk_…
+```
+
+Used automatically when `WATSONX_API_KEY` is absent. Get a free key at [console.groq.com/keys](https://console.groq.com/keys).
+
+---
 
 ## Project structure
 
 ```
 app/
-  page.tsx                  Main page — useReducer state machine, all UI assembly
-  layout.tsx                Root HTML shell
-  globals.css               Tailwind + React Flow base styles + all keyframe animations
-  api/generate-branches/
-    route.ts                POST endpoint — validates input, calls generateBranches()
+  page.tsx                        Main page — useReducer state machine, all UI
+  layout.tsx                      Root HTML shell, page title
+  globals.css                     Tailwind + React Flow base styles + all keyframes
+  api/
+    generate-branches/route.ts    POST — returns 4 branch options (text, tone, why)
+    generate-thread-branches/     POST — branches for a character side-story
+    summarise-story/              POST — 2-3 sentence canon summary (used in prompts)
+    weave-thread/                 POST — weaves a character arc into the main story
+    titlise-story/                POST — generates title + tagline for a path
+    generate-image/               POST — server-side image fetch (HF → Pollinations)
 
 components/
-  StoryTree.tsx             React Flow canvas wrapper
-  StoryNodeCard.tsx         Custom node — tone badge, text, Why, ＋ New directions, illustration
-  BranchPanel.tsx           3-card options strip at the bottom (quill loading animation)
-  PathDrawer.tsx            Right-side drawer — comic-strip story path + Copy button
+  StoryTree.tsx                   React Flow canvas — main tree + character threads
+  StoryNodeCard.tsx               Main tree node: tone badge, Why tooltip, actions
+  ThreadNodeCard.tsx              Character thread node: palette border, weave button
+  NodeMenu.tsx                    ⋯ overflow menu: edit, insert, prune
+  BranchPanel.tsx                 4-card options panel (2×2 grid), refresh, wrap-up
+  PathDrawer.tsx                  Right drawer: comic strip, TTS, PNG download
+  BackgroundScene.tsx             Animated birds + bunnies on the landing screen
+  CreateThreadModal.tsx           New character thread modal (name, backstory, relation)
+  AppearancesPanel.tsx            Shows where a character appears in the main story
+  CharacterUniverseView.tsx       Character Universe tab with inline thread editing
+  UniverseGraph.tsx               React Flow graph of threads + relationship edges
+  UniverseAppearancesDrawer.tsx   Appearances detail drawer within Universe tab
+  CharacterUniverseNode.tsx       Universe tab node card
 
 lib/
-  types.ts                  TypeScript interfaces: BranchOption, StoryNode, TreeState, TreeSnapshot
-  treeUtils.ts              Pure utilities: getPath, pathToText, computeLayout
+  types.ts                        All TypeScript interfaces (StoryNode, TreeState, …)
+  treeUtils.ts                    getPath, pathToText, computeLayout, computeThreadLayout
+  threadPalette.ts                6-colour palette + MAX_THREADS constant
+  appearanceUtils.ts              findAppearances, splitHighlights helpers
   ai/
-    generateBranches.ts     Real watsonx/Granite call with stub fallback
-    generateImage.ts        Pollinations.ai image URL builder (tone-aware, deterministic seed)
+    generateBranches.ts           watsonx textChat → Groq → stub
+    summariseStory.ts             watsonx textChat → Groq → stub
+    generateWeavedNode.ts         watsonx textChat → Groq → stub
+    titliseStory.ts               watsonx textChat → Groq → stub
+    generateImage.ts              buildImagePrompt() + hashId() helpers
 ```
+
+---
 
 ## Tech stack
 
-- [Next.js 14](https://nextjs.org) (App Router, TypeScript)
-- [React Flow (`@xyflow/react`)](https://reactflow.dev) — canvas, pan/zoom, edges
-- [Tailwind CSS](https://tailwindcss.com)
-- [IBM watsonx AI SDK (`@ibm-cloud/watsonx-ai`)](https://github.com/IBM/ibm-generative-ai-node-sdk) — `ibm/granite-3-8b-instruct` by default
-- [Pollinations.ai](https://pollinations.ai) — free, no-key image generation for node illustrations
+| Layer | Technology |
+|---|---|
+| Framework | [Next.js 14](https://nextjs.org) — App Router, TypeScript |
+| Canvas | [`@xyflow/react`](https://reactflow.dev) v12 — pan/zoom, nodes, edges |
+| Styling | [Tailwind CSS](https://tailwindcss.com) |
+| Story AI | [IBM watsonx AI SDK](https://github.com/IBM/ibm-generative-ai-node-sdk) — `ibm/granite-3-8b-instruct` |
+| Story AI fallback | [Groq](https://groq.com) — `llama-3.3-70b-versatile` |
+| Image generation | [Pollinations.ai](https://pollinations.ai) FLUX — server-side, no key required |
+| Image generation (optional) | [Hugging Face](https://huggingface.co) Inference API — SD 2.1 |
+| Narration | Web Speech API — browser-native TTS |
+| Comic export | HTML5 Canvas — client-side PNG composite |

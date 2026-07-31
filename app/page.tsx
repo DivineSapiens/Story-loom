@@ -14,6 +14,11 @@ import CharacterUniverseView from "@/components/CharacterUniverseView";
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
+const GENRES = [
+  "Fantasy", "Sci-Fi", "Mystery", "Romance",
+  "Horror", "Thriller", "Historical", "Adventure",
+] as const;
+
 const INITIAL_STATE: TreeState = {
   nodes: [],
   pendingOptions: null,
@@ -28,6 +33,7 @@ const INITIAL_STATE: TreeState = {
   styleDescription: "",
   previousTree: null,
   wrapUpRequested: false,
+  genre: "",
   // ── Character universe ──────────────────────────────────────
   canonSummary: "",
   canonSummaryPending: false,
@@ -58,6 +64,7 @@ type Action =
   | { type: "RESTORE_TREE" }
   | { type: "DISMISS_ARCHIVE" }
   | { type: "SET_STYLE"; styleDescription: string }
+  | { type: "SET_GENRE"; genre: string }
   | { type: "TOGGLE_WRAP_UP" }
   /** Auto-opens the drawer when an ending node is committed. */
   | { type: "OPEN_DRAWER" }
@@ -249,6 +256,9 @@ function reducer(state: TreeState, action: Action): TreeState {
 
     case "SET_STYLE":
       return { ...state, styleDescription: action.styleDescription };
+
+    case "SET_GENRE":
+      return { ...state, genre: action.genre };
 
     case "TOGGLE_WRAP_UP":
       return { ...state, wrapUpRequested: !state.wrapUpRequested };
@@ -630,7 +640,9 @@ function reducer(state: TreeState, action: Action): TreeState {
 export default function Page() {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const [openingText, setOpeningText] = useState("");
-  const [styleText, setStyleText] = useState("");
+  // Local state for the custom genre text input — kept separate from state.genre
+  // so the input field doesn't disappear as the user types.
+  const [customGenreText, setCustomGenreText] = useState("");
   const [undoToast, setUndoToast] = useState<{
     nodeId: string;
     restoredOptions: BranchOption[];
@@ -667,16 +679,16 @@ export default function Page() {
   }, []);
 
   // ── fetchBranches ──────────────────────────────────────────────────────────
-  const fetchBranches = useCallback(async (nodeId: string, nodes: StoryNode[]) => {
+  const fetchBranches = useCallback(async (nodeId: string, nodes: StoryNode[], genreOverride?: string) => {
     dispatch({ type: "SET_LOADING" });
     const path = getPath(nodes, nodeId);
     const pathText = pathToText(path);
-    const { wrapUpRequested } = stateRef.current;
+    const { wrapUpRequested, genre } = stateRef.current;
     try {
       const res = await fetch("/api/generate-branches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pathText, wrapUp: wrapUpRequested }),
+        body: JSON.stringify({ pathText, wrapUp: wrapUpRequested, genre: genreOverride ?? genre }),
       });
       const data = await res.json() as { branches?: BranchOption[]; error?: string; detail?: string };
       if (!res.ok) {
@@ -716,7 +728,6 @@ export default function Page() {
   const handleBeginStory = useCallback(() => {
     const text = openingText.trim();
     if (!text) return;
-    dispatch({ type: "SET_STYLE", styleDescription: styleText });
     if (state.nodes.length > 0) {
       dispatch({ type: "CONFIRM_RESET", pendingText: text });
       return;
@@ -736,7 +747,7 @@ export default function Page() {
     fetchBranches(root.id, [root]);
     // Fire summarise immediately after root (confirmed: F — summarise from root too)
     fireSummarise(text);
-  }, [openingText, styleText, state.nodes.length, fetchBranches, fireSummarise]);
+  }, [openingText, state.nodes.length, fetchBranches, fireSummarise]);
 
   // ── handleConfirmReset ─────────────────────────────────────────────────────
   const handleConfirmReset = useCallback(() => {
@@ -812,11 +823,11 @@ export default function Page() {
 
   // ── handleGenerateBranches ─────────────────────────────────────────────────
   const handleGenerateBranches = useCallback(
-    (nodeId: string) => {
+    (nodeId: string, genreOverride?: string) => {
       // Block generation from ending nodes — the story is complete there.
       const node = stateRef.current.nodes.find((n) => n.id === nodeId);
       if (node?.isEnding) return;
-      fetchBranches(nodeId, stateRef.current.nodes);
+      fetchBranches(nodeId, stateRef.current.nodes, genreOverride);
       const path = getPath(stateRef.current.nodes, nodeId);
       dispatch({ type: "SELECT_NODE", nodeId, pathIds: path.map((n) => n.id) });
     },
@@ -1304,7 +1315,7 @@ export default function Page() {
   // ── Derived values ─────────────────────────────────────────────────────────
   const { nodes, pendingOptions, branchError, isLoading, drawerOpen, openingCollapsed,
           activePathIds, pendingReset, previousTree, wrapUpRequested, styleDescription,
-          characterThreads, branchContext, weaveLoading, canonSummaryPending } = state;
+          genre, characterThreads, branchContext, weaveLoading, canonSummaryPending } = state;
 
   const hasTree = nodes.length > 0;
   const showOpeningArea = !hasTree || !openingCollapsed;
@@ -1457,11 +1468,7 @@ export default function Page() {
           <p className="text-[12px] text-gray-300">Previous story archived.</p>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => {
-                const restoredStyle = stateRef.current.previousTree?.styleDescription ?? "";
-                dispatch({ type: "RESTORE_TREE" });
-                setStyleText(restoredStyle);
-              }}
+              onClick={() => dispatch({ type: "RESTORE_TREE" })}
               className="rounded-md bg-amber-500 px-3 py-1.5 text-[12px] font-semibold
                          text-gray-950 hover:bg-amber-400 transition-colors duration-100"
             >
@@ -1527,32 +1534,6 @@ export default function Page() {
                            text-gray-100 placeholder-gray-600 ring-1 ring-gray-700
                            focus:outline-none focus:ring-amber-500 transition-all duration-150"
               />
-              <div className="flex flex-col gap-1.5">
-                <div className="flex flex-wrap gap-1.5">
-                  {["Watercolor storybook", "Noir comic", "Pop art", "Cute cartoon", "Manga"].map((chip) => (
-                    <button
-                      key={chip}
-                      onClick={() => setStyleText(chip)}
-                      className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium border transition-colors duration-100
-                        ${styleText === chip
-                          ? "bg-amber-500 border-amber-500 text-gray-950"
-                          : "bg-transparent border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200"
-                        }`}
-                    >
-                      {chip}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  type="text"
-                  value={styleText}
-                  onChange={(e) => setStyleText(e.target.value)}
-                  placeholder="Or describe a custom visual style…"
-                  className="w-full rounded-lg bg-gray-900 px-3 py-2 text-[12px]
-                             text-gray-100 placeholder-gray-600 ring-1 ring-gray-700
-                             focus:outline-none focus:ring-amber-500 transition-all duration-150"
-                />
-              </div>
             </div>
             <button
               onClick={handleBeginStory}
@@ -1572,10 +1553,10 @@ export default function Page() {
         <div className="flex-1 min-h-0 relative">
           {hasTree ? (
             <StoryTree
-              nodes={nodes}
-              activePathIds={activePathIds}
-              onNodeClick={handleNodeClick}
-              onGenerateBranches={handleGenerateBranches}
+                nodes={nodes}
+                activePathIds={activePathIds}
+                onNodeClick={handleNodeClick}
+                onGenerateBranches={(nodeId, genreOverride) => handleGenerateBranches(nodeId, genreOverride)}
               onCreateThread={handleOpenCreateThread}
               onPaneClick={() => dispatch({ type: "DISMISS_PANEL" })}
               onPruneNode={handlePruneNode}
@@ -1608,6 +1589,51 @@ export default function Page() {
                   </p>
                 </div>
 
+                {/* ── Genre picker ──────────────────────────────────────── */}
+                <div className="flex flex-col gap-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-600 text-center">
+                    Genre <span className="normal-case font-normal text-gray-700">(optional)</span>
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-1.5">
+                    {GENRES.map((g) => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => {
+                          const next = genre === g ? "" : g;
+                          dispatch({ type: "SET_GENRE", genre: next });
+                          // Selecting a preset chip clears the custom text input
+                          if (next !== "") setCustomGenreText("");
+                        }}
+                        className={`rounded-full px-3 py-1 text-[12px] font-medium transition-all duration-100 border
+                          ${genre === g
+                            ? "bg-amber-500 text-gray-950 border-amber-500"
+                            : "bg-gray-900 text-gray-400 border-gray-700 hover:border-amber-500/50 hover:text-gray-200"
+                          }`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Custom genre input — always visible so typing doesn't make it vanish.
+                      Typing here sets state.genre to the typed value (deselecting any chip).
+                      Selecting a chip above clears this field via setCustomGenreText(""). */}
+                  <input
+                    type="text"
+                    value={customGenreText}
+                    placeholder="Or type a custom genre…"
+                    maxLength={32}
+                    className="w-full rounded-lg bg-gray-900 px-3 py-1.5 text-[12px] text-gray-100
+                               placeholder-gray-600 ring-1 ring-gray-800 focus:outline-none
+                               focus:ring-amber-500 transition-all duration-150"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCustomGenreText(val);
+                      dispatch({ type: "SET_GENRE", genre: val });
+                    }}
+                  />
+                </div>
+
                 <textarea
                   value={openingText}
                   onChange={(e) => setOpeningText(e.target.value)}
@@ -1622,37 +1648,6 @@ export default function Page() {
                              transition-all duration-150 shadow-lg"
                 />
 
-                <div className="flex flex-col gap-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 text-center">
-                    Visual style (optional)
-                  </p>
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {["Watercolor storybook", "Noir comic", "Pop art", "Cute cartoon", "Manga"].map((chip) => (
-                      <button
-                        key={chip}
-                        onClick={() => setStyleText(chip)}
-                        className={`rounded-full px-3 py-1 text-[12px] font-medium border transition-colors duration-100
-                          ${styleText === chip
-                            ? "bg-amber-500 border-amber-500 text-gray-950"
-                            : "bg-transparent border-gray-700 text-gray-400 hover:border-gray-400 hover:text-gray-200"
-                          }`}
-                      >
-                        {chip}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    type="text"
-                    value={styleText}
-                    onChange={(e) => setStyleText(e.target.value)}
-                    placeholder="Or describe a custom visual style…"
-                    className="w-full rounded-2xl bg-gray-900/80 px-5 py-3 text-[13px]
-                               text-gray-100 placeholder-gray-600 ring-1 ring-gray-700
-                               focus:outline-none focus:ring-2 focus:ring-amber-500
-                               transition-all duration-150"
-                  />
-                </div>
-
                 <button
                   onClick={handleBeginStory}
                   disabled={!openingText.trim()}
@@ -1660,7 +1655,7 @@ export default function Page() {
                              hover:bg-amber-400 disabled:opacity-30 disabled:cursor-not-allowed
                              transition-colors duration-150 shadow-lg shadow-amber-900/20"
                 >
-                  Begin story
+                  Begin story {genre ? `· ${genre}` : ""}
                 </button>
                 <p className="text-center text-[11px] text-gray-600">⌘ Enter to submit</p>
               </div>
@@ -1759,10 +1754,19 @@ export default function Page() {
           isLoading={panelLoading}
           error={panelError}
           wrapUpRequested={wrapUpRequested}
+          genre={genre}
           onSelect={handlePanelSelect}
           onAddUserText={isThreadContext ? handleAddUserThreadText : handleAddUserText}
           onToggleWrapUp={() => dispatch({ type: "TOGGLE_WRAP_UP" })}
           onRetry={handlePanelRetry}
+          onAiPick={handlePanelSelect}
+          onGenreChange={(newGenre) => {
+            // Update global genre state, then immediately re-fetch branches with new genre.
+            dispatch({ type: "SET_GENRE", genre: newGenre });
+            // Re-fire branches with the new genre — use the selected node as source.
+            const { selectedNodeId: selId, nodes: ns } = stateRef.current;
+            if (selId) fetchBranches(selId, ns, newGenre || undefined);
+          }}
         />
       )}
 
@@ -1771,7 +1775,6 @@ export default function Page() {
         <PathDrawer
           isOpen={drawerOpen}
           activePath={activePath}
-          styleDescription={styleDescription}
           onClose={() => dispatch({ type: "TOGGLE_DRAWER" })}
         />
       )}

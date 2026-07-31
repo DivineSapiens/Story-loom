@@ -10,26 +10,16 @@ import { pathToText } from "@/lib/treeUtils";
 interface PathDrawerProps {
   isOpen: boolean;
   activePath: StoryNode[];
-  styleDescription: string;
   onClose: () => void;
 }
 
 // ─── Per-panel image state ─────────────────────────────────────────────────────
-//
-// Status lifecycle (Hugging Face):
-//   idle → loading → ready          (happy path, ~3-6s)
-//   idle → loading → model_loading  (HF 503 — model cold-starting)
-//         → loading → ready         (auto-retry after estimated_time)
-//   idle → loading → failed         (non-503 error or no HF token)
-//   idle → no_token                 (HUGGINGFACE_TOKEN not set — show placeholder)
 
 type PanelStatus = "idle" | "loading" | "model_loading" | "ready" | "failed" | "no_token";
 
 interface PanelEntry {
   status: PanelStatus;
-  /** data: URL returned by the API route (only set when status === "ready"). */
   dataUrl: string;
-  /** Epoch-ms when the model-loading retry will fire (only during model_loading). */
   retryAt: number;
 }
 
@@ -50,6 +40,10 @@ interface TitleState {
 
 type TtsStatus = "idle" | "speaking" | "paused";
 
+// ─── Active tab ───────────────────────────────────────────────────────────────
+
+type Tab = "story" | "comic";
+
 // ─── Tone → panel border accent ───────────────────────────────────────────────
 
 const TONE_BORDER: Record<string, string> = {
@@ -67,23 +61,32 @@ function toneBorderColor(tone: string): string {
   return TONE_BORDER[tone] ?? "#374151";
 }
 
+// ─── Tone → text accent ───────────────────────────────────────────────────────
+
+const TONE_TEXT: Record<string, string> = {
+  Opening:    "text-sky-400",
+  Tense:      "text-red-400",
+  Revelatory: "text-purple-400",
+  Melancholy: "text-blue-400",
+  Hopeful:    "text-green-400",
+  Mysterious: "text-indigo-400",
+  Humorous:   "text-yellow-400",
+  Dark:       "text-gray-400",
+};
+
+function toneLabelClass(tone: string): string {
+  return TONE_TEXT[tone] ?? "text-gray-400";
+}
+
 // ─── Server-side image fetcher ────────────────────────────────────────────────
-//
-// Calls our /api/generate-image route (which calls Hugging Face server-side).
-// Handles the 503 model-loading case with a single auto-retry after the
-// `retryAfterMs` the server returns.
-//
-// onUpdate is called at each state transition so the panel re-renders live.
 
 async function fetchPanelImage(
   node: StoryNode,
-  styleDescription: string,
   onUpdate: (id: string, patch: Partial<PanelEntry>) => void
 ): Promise<void> {
-  const prompt = buildImagePrompt(node, styleDescription);
+  const prompt = buildImagePrompt(node);
   const seed   = hashId(node.id);
 
-  // ── First attempt ────────────────────────────────────────────────────────────
   onUpdate(node.id, { status: "loading", dataUrl: "", retryAt: 0 });
 
   const tryFetch = async (): Promise<{ done: boolean; retryAfterMs?: number }> => {
@@ -95,33 +98,27 @@ async function fetchPanelImage(
         body: JSON.stringify({ prompt, seed }),
       });
     } catch {
-      // Network error (offline, DNS failure, etc.)
       onUpdate(node.id, { status: "failed" });
       return { done: true };
     }
 
-    // Always read as text first — the body might be empty or non-JSON,
-    // and calling .json() directly throws "Unexpected end of JSON input".
     const text = await res.text().catch(() => "");
     let json: { dataUrl?: string; error?: string; retryAfterMs?: number } = {};
-    try { json = text ? JSON.parse(text) : {}; } catch { /* malformed JSON — leave json as {} */ }
+    try { json = text ? JSON.parse(text) : {}; } catch { /* ignore */ }
 
     if (json.error === "no_token") {
       onUpdate(node.id, { status: "no_token" });
       return { done: true };
     }
-
     if (res.status === 503 && json.error === "model_loading") {
       const ms = json.retryAfterMs ?? 20_000;
       onUpdate(node.id, { status: "model_loading", retryAt: Date.now() + ms });
       return { done: false, retryAfterMs: ms };
     }
-
     if (!res.ok || json.error || !json.dataUrl) {
       onUpdate(node.id, { status: "failed" });
       return { done: true };
     }
-
     onUpdate(node.id, { status: "ready", dataUrl: json.dataUrl, retryAt: 0 });
     return { done: true };
   };
@@ -129,16 +126,11 @@ async function fetchPanelImage(
   const result = await tryFetch();
   if (result.done) return;
 
-  // ── Single model-loading retry ────────────────────────────────────────────────
   const delay = result.retryAfterMs ?? 20_000;
   await new Promise<void>((r) => setTimeout(r, delay));
-
   onUpdate(node.id, { status: "loading", retryAt: 0 });
   const retryResult = await tryFetch();
-  if (!retryResult.done) {
-    // Still 503 after one retry — give up
-    onUpdate(node.id, { status: "failed" });
-  }
+  if (!retryResult.done) onUpdate(node.id, { status: "failed" });
 }
 
 // ─── Comic panel ─────────────────────────────────────────────────────────────
@@ -156,7 +148,6 @@ function ComicPanel({ node, index, entry, nowMs, isSpeaking, panelRef }: ComicPa
   const borderColor = toneBorderColor(node.tone);
   const isUser      = node.authorType === "user";
 
-  // Seconds until model-loading retry fires
   const retryIn =
     entry?.status === "model_loading" && entry.retryAt > 0
       ? Math.max(0, Math.ceil((entry.retryAt - nowMs) / 1000))
@@ -174,45 +165,33 @@ function ComicPanel({ node, index, entry, nowMs, isSpeaking, panelRef }: ComicPa
       }}
       className="flex flex-col overflow-hidden bg-white"
     >
-      {/* ── Panel image area ──────────────────────────────────────────────── */}
+      {/* Image area */}
       {isUser ? (
         <div className="w-full h-3 bg-gray-100" />
       ) : entry?.status === "ready" ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={entry.dataUrl}
-          alt=""
-          className="w-full aspect-[4/3] object-cover block"
-          style={{ animation: "panelReveal 0.35s ease-out both" }}
-        />
+        <img src={entry.dataUrl} alt="" className="w-full aspect-[4/3] object-cover block"
+             style={{ animation: "panelReveal 0.35s ease-out both" }} />
       ) : entry?.status === "loading" ? (
         <div className="w-full aspect-[4/3] bg-gray-100 flex flex-col items-center justify-center gap-2 select-none">
-          <svg
-            className="w-8 h-8 text-gray-300"
-            viewBox="0 0 24 24"
-            fill="none"
-            style={{ animation: "spin 1.2s linear infinite" }}
-            aria-hidden="true"
-          >
+          <svg className="w-8 h-8 text-gray-300" viewBox="0 0 24 24" fill="none"
+               style={{ animation: "spin 1.2s linear infinite" }} aria-hidden="true">
             <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2"
                     strokeDasharray="20 40" strokeLinecap="round"/>
           </svg>
           <span className="text-[10px] text-gray-400 font-sans">Illustrating…</span>
         </div>
       ) : entry?.status === "model_loading" ? (
-        // HF model is cold-starting — show a warm-up countdown
         <div className="w-full aspect-[4/3] bg-gray-100 flex flex-col items-center justify-center gap-2 select-none">
           <svg className="w-7 h-7 text-amber-400/70" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8"/>
-            <path d="M12 7v5l3 3" stroke="currentColor" strokeWidth="1.8"
-                  strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M12 7v5l3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
           <span className="text-[10px] text-amber-500/80 font-sans tabular-nums">
             {retryIn > 0 ? `Model warming up… ${retryIn}s` : "Retrying…"}
           </span>
         </div>
       ) : entry?.status === "no_token" ? (
-        // No HF token configured — grey placeholder, not an error
         <div className="w-full aspect-[4/3] bg-gray-50 flex flex-col items-center justify-center gap-1.5 select-none px-4">
           <svg className="w-8 h-8 text-gray-300" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.5"/>
@@ -235,33 +214,25 @@ function ComicPanel({ node, index, entry, nowMs, isSpeaking, panelRef }: ComicPa
         <div className="w-full aspect-[4/3] bg-gray-100" />
       )}
 
-      {/* ── Caption gutter ────────────────────────────────────────────────── */}
+      {/* Caption */}
       <div className="bg-black px-3 py-2 flex flex-col gap-0.5">
         <div className="flex items-center gap-2">
           <span className="text-[9px] font-bold text-white/40 tabular-nums tracking-wider font-sans">
             {String(index + 1).padStart(2, "0")}
           </span>
           {isUser ? (
-            <span className="text-[9px] font-bold uppercase tracking-widest font-sans text-teal-400">
-              Your words
-            </span>
+            <span className="text-[9px] font-bold uppercase tracking-widest font-sans text-teal-400">Your words</span>
           ) : (
-            <span
-              className="text-[9px] font-bold uppercase tracking-widest font-sans"
-              style={{ color: borderColor === "#1f2937" ? "#9ca3af" : borderColor }}
-            >
+            <span className="text-[9px] font-bold uppercase tracking-widest font-sans"
+                  style={{ color: borderColor === "#1f2937" ? "#9ca3af" : borderColor }}>
               {node.tone}
             </span>
           )}
           {isSpeaking && (
-            <span className="ml-auto text-[9px] text-amber-400 font-sans animate-pulse">
-              ▶ Reading…
-            </span>
+            <span className="ml-auto text-[9px] text-amber-400 font-sans animate-pulse">▶ Reading…</span>
           )}
           {!isUser && !isSpeaking && entry?.status === "loading" && (
-            <span className="ml-auto text-[9px] text-amber-400/60 font-sans animate-pulse">
-              Illustrating…
-            </span>
+            <span className="ml-auto text-[9px] text-amber-400/60 font-sans animate-pulse">Illustrating…</span>
           )}
           {!isUser && entry?.status === "model_loading" && (
             <span className="ml-auto text-[9px] text-amber-500/70 font-sans tabular-nums">
@@ -302,9 +273,7 @@ function pickNarratorVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice
 }
 
 function resolveNarratorVoice(): Promise<SpeechSynthesisVoice | null> {
-  if (typeof window === "undefined" || !window.speechSynthesis) {
-    return Promise.resolve(null);
-  }
+  if (typeof window === "undefined" || !window.speechSynthesis) return Promise.resolve(null);
   const immediate = window.speechSynthesis.getVoices();
   if (immediate.length > 0) return Promise.resolve(pickNarratorVoice(immediate));
 
@@ -322,10 +291,10 @@ function resolveNarratorVoice(): Promise<SpeechSynthesisVoice | null> {
   });
 }
 
-// ─── Canvas download helper ────────────────────────────────────────────────────
+// ─── Canvas comic download ─────────────────────────────────────────────────────
 
 const CANVAS_W      = 480;
-const IMG_H         = 360;  // 4:3 ratio for CANVAS_W=480
+const IMG_H         = 360;
 const CAPTION_H     = 80;
 const PANEL_H       = IMG_H + CAPTION_H;
 const TEXT_ONLY_H   = 160;
@@ -433,7 +402,6 @@ async function downloadComic(
       ctx.textAlign = "center";
       ctx.fillText("Generating…", CANVAS_W / 2, y + 4 + (IMG_H - 8) / 2);
     }
-    // failed / no_token → text-only (no image block)
 
     const textOnlyMode =
       !isUser && (entry?.status === "failed" || entry?.status === "no_token" || (!entry && panelH === TEXT_ONLY_H));
@@ -473,28 +441,34 @@ async function downloadComic(
   }, "image/png");
 }
 
-// ─── Drawer ───────────────────────────────────────────────────────────────────
+// ─── PathDrawer ───────────────────────────────────────────────────────────────
 
-export default function PathDrawer({ isOpen, activePath, styleDescription, onClose }: PathDrawerProps) {
+export default function PathDrawer({ isOpen, activePath, onClose }: PathDrawerProps) {
   const pathText = pathToText(activePath);
   const pathKey  = activePath.map((n) => n.id).join(",");
 
-  // ── Image state ──────────────────────────────────────────────────────────────
+  // ── Tab state ─────────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<Tab>("story");
+
+  // ── Image state ───────────────────────────────────────────────────────────
   const [imageMap, setImageMap] = useState<ImageMap>({});
   const [nowMs,    setNowMs]    = useState<number>(() => Date.now());
   const tickerRef               = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── Title state ───────────────────────────────────────────────────────────────
+  // ── Title state ───────────────────────────────────────────────────────────
   const [titleState, setTitleState] = useState<TitleState>({
     status: "idle", title: "", tagline: "", forPathKey: "",
   });
 
-  // ── TTS state ─────────────────────────────────────────────────────────────────
+  // ── TTS state ─────────────────────────────────────────────────────────────
   const [ttsStatus,     setTtsStatus]     = useState<TtsStatus>("idle");
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const ttsAbortRef                       = useRef(false);
 
-  // ── Panel refs for auto-scroll ────────────────────────────────────────────────
+  // ── Copy flash ────────────────────────────────────────────────────────────
+  const [copied, setCopied] = useState(false);
+
+  // ── Panel refs for TTS auto-scroll ────────────────────────────────────────
   const panelRefs = useRef<Array<React.RefObject<HTMLDivElement>>>([]);
   if (panelRefs.current.length !== activePath.length) {
     panelRefs.current = activePath.map(() =>
@@ -502,7 +476,7 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
     );
   }
 
-  // ── updateEntry ───────────────────────────────────────────────────────────────
+  // ── updateEntry ───────────────────────────────────────────────────────────
   const updateEntry = useCallback((id: string, patch: Partial<PanelEntry>) => {
     setImageMap((m) => ({
       ...m,
@@ -510,7 +484,7 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
     }));
   }, []);
 
-  // ── 1-second ticker for model_loading countdown ───────────────────────────────
+  // ── 1-second ticker for model_loading countdown ───────────────────────────
   useEffect(() => {
     const anyWaiting = Object.values(imageMap).some(
       (e) => e.status === "loading" || e.status === "model_loading"
@@ -526,7 +500,7 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
 
   useEffect(() => () => { if (tickerRef.current) clearInterval(tickerRef.current); }, []);
 
-  // ── Batch image kick-off (runs when drawer opens or path changes) ─────────────
+  // ── Batch image kick-off (when drawer opens or path changes) ──────────────
   useEffect(() => {
     if (!isOpen || activePath.length === 0) return;
     const aiNodes = activePath.filter((n) => n.authorType !== "user");
@@ -543,20 +517,17 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
       }
       if (toLoad.length > 0) {
         setTimeout(() => {
-          for (const node of toLoad) {
-            fetchPanelImage(node, styleDescription, updateEntry);
-          }
+          for (const node of toLoad) fetchPanelImage(node, updateEntry);
         }, 0);
       }
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, pathKey, styleDescription]);
+  }, [isOpen, pathKey]);
 
-  // ── Title fetch (cached per pathKey) ──────────────────────────────────────────
+  // ── Title fetch ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isOpen || !pathText || titleState.forPathKey === pathKey) return;
-
     setTitleState({ status: "loading", title: "", tagline: "", forPathKey: pathKey });
 
     fetch("/api/titlise-story", {
@@ -578,7 +549,7 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, pathKey]);
 
-  // ── Stop TTS when drawer closes ───────────────────────────────────────────────
+  // ── Stop TTS when drawer closes ───────────────────────────────────────────
   useEffect(() => {
     if (!isOpen) {
       ttsAbortRef.current = true;
@@ -588,7 +559,7 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
     }
   }, [isOpen]);
 
-  // ── TTS: speak all panels in order ────────────────────────────────────────────
+  // ── TTS ───────────────────────────────────────────────────────────────────
   const handleSpeak = useCallback(() => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
@@ -644,19 +615,23 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
     setSpeakingIndex(null);
   }, []);
 
-  // ── Download ──────────────────────────────────────────────────────────────────
+  // ── Copy ──────────────────────────────────────────────────────────────────
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(pathText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch { /* ignore */ }
+  }, [pathText]);
+
+  // ── Comic download ────────────────────────────────────────────────────────
   const handleDownload = useCallback(async () => {
     const t = titleState.status === "ready" ? titleState.title   : "";
     const q = titleState.status === "ready" ? titleState.tagline : "";
     await downloadComic(activePath, imageMap, t, q);
   }, [activePath, imageMap, titleState]);
 
-  // ── Copy ──────────────────────────────────────────────────────────────────────
-  const handleCopy = useCallback(async () => {
-    try { await navigator.clipboard.writeText(pathText); } catch { /* ignore */ }
-  }, [pathText]);
-
-  // ── Derived ───────────────────────────────────────────────────────────────────
+  // ── Derived ───────────────────────────────────────────────────────────────
   const aiNodeIds   = activePath.filter((n) => n.authorType !== "user").map((n) => n.id);
   const anyBuilding = aiNodeIds.some((id) => {
     const e = imageMap[id];
@@ -669,192 +644,363 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
 
   const hasSpeech = typeof window !== "undefined" && "speechSynthesis" in window;
 
+  // ────────────────────────────────────────────────────────────────────────────
   return (
     <>
       {/* Backdrop */}
       {isOpen && (
-        <div className="fixed inset-0 z-20 bg-black/40" onClick={onClose} aria-hidden="true" />
+        <div className="fixed inset-0 z-20 bg-black/60" onClick={onClose} aria-hidden="true" />
       )}
 
-      {/* Drawer panel */}
+      {/* ── Modal panel — centered ─────────────────────────────────────────── */}
+      {/* Outer wrapper: only mounted when open — completely removed from DOM when closed
+          so it cannot intercept pointer events on the landing screen or tree canvas. */}
+      {isOpen && (
       <div
         role="dialog"
-        aria-label="Read this path"
+        aria-label="Story path"
         aria-modal="true"
-        className={`
-          fixed top-0 right-0 z-30 h-full w-full max-w-md
-          bg-black border-l-4 border-black flex flex-col
-          transition-transform duration-300 ease-in-out
-          ${isOpen ? "translate-x-0" : "translate-x-full"}
-        `}
+        className="fixed z-30 inset-0 flex items-center justify-center pointer-events-none"
       >
-        {/* ── Header ──────────────────────────────────────────────────────── */}
-        <div className="flex-shrink-0 flex items-center justify-between
-                        bg-gray-950 border-b-4 border-black px-5 py-4">
-          <div className="flex flex-col gap-0.5">
-            <h2 className="text-sm font-bold text-white tracking-widest uppercase font-sans">
-              Story path
-            </h2>
-            {isOpen && aiNodeIds.length > 0 && anyBuilding && (
-              <span className="text-[10px] text-amber-400/70 font-sans animate-pulse">
-                Building comic… {settledCount}/{aiNodeIds.length} panels ready
-              </span>
-            )}
-            {isOpen && aiNodeIds.length > 0 && !anyBuilding && (
-              <span className="text-[10px] text-green-400/60 font-sans">
-                {settledCount === aiNodeIds.length
-                  ? `${settledCount} panel${settledCount !== 1 ? "s" : ""} illustrated`
-                  : `${settledCount}/${aiNodeIds.length} panels illustrated`}
-              </span>
-            )}
-          </div>
+        <div
+          className="
+            pointer-events-auto
+            w-full max-w-2xl mx-4
+            max-h-[90vh] h-[90vh]
+            bg-gray-950 border border-gray-800 rounded-2xl
+            flex flex-col overflow-hidden shadow-2xl shadow-black/80
+            animate-drawer-in
+          "
+        >
 
-          {/* Right controls */}
-          <div className="flex items-center gap-1.5">
-            {/* TTS controls */}
-            {hasSpeech && activePath.length > 0 && (
-              ttsStatus === "idle" ? (
-                <button
-                  onClick={handleSpeak}
-                  title="Listen to this path"
-                  className="rounded px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wide
-                             text-purple-300 hover:text-purple-100 bg-gray-900 border border-gray-700
-                             transition-colors duration-100 font-sans flex items-center gap-1"
-                >
-                  <span aria-hidden="true">🔊</span> Listen
-                </button>
-              ) : ttsStatus === "speaking" ? (
+          {/* ── Header ────────────────────────────────────────────────────── */}
+          <div className="flex-shrink-0 flex items-center justify-between px-5 py-3
+                          border-b border-gray-800 bg-gray-950">
+
+            {/* Title block */}
+            <div className="flex flex-col gap-0.5 min-w-0">
+              {titleState.status === "loading" && (
+                <div className="flex flex-col gap-1">
+                  <div className="h-4 w-32 rounded bg-gray-800 animate-pulse" />
+                  <div className="h-3 w-48 rounded bg-gray-800 animate-pulse" />
+                </div>
+              )}
+              {titleState.status === "ready" ? (
                 <>
-                  <button
-                    onClick={handlePause}
-                    title="Pause narration"
-                    className="rounded px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wide
-                               text-amber-300 hover:text-amber-100 bg-gray-900 border border-gray-700
-                               transition-colors duration-100 font-sans"
-                  >
-                    ⏸ Pause
-                  </button>
-                  <button
-                    onClick={handleStop}
-                    title="Stop narration"
-                    className="rounded p-1.5 text-gray-400 hover:text-red-400
-                               bg-gray-900 border border-gray-700 transition-colors duration-100"
-                    aria-label="Stop narration"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
-                      <rect x="1" y="1" width="8" height="8" rx="1"/>
-                    </svg>
-                  </button>
+                  <h2 className="text-sm font-bold text-white font-serif truncate">{titleState.title}</h2>
+                  <p className="text-[11px] text-gray-500 italic font-serif truncate">{titleState.tagline}</p>
                 </>
-              ) : (
-                <>
-                  <button
-                    onClick={handleResume}
-                    title="Resume narration"
-                    className="rounded px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wide
-                               text-green-300 hover:text-green-100 bg-gray-900 border border-gray-700
-                               transition-colors duration-100 font-sans"
-                  >
-                    ▶ Resume
-                  </button>
-                  <button
-                    onClick={handleStop}
-                    title="Stop narration"
-                    className="rounded p-1.5 text-gray-400 hover:text-red-400
-                               bg-gray-900 border border-gray-700 transition-colors duration-100"
-                    aria-label="Stop narration"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
-                      <rect x="1" y="1" width="8" height="8" rx="1"/>
-                    </svg>
-                  </button>
-                </>
-              )
-            )}
+              ) : titleState.status !== "loading" && (
+                <h2 className="text-sm font-bold text-gray-300 tracking-widest uppercase font-sans">
+                  Story path
+                </h2>
+              )}
+            </div>
 
-            <button
-              onClick={handleCopy}
-              disabled={activePath.length === 0}
-              title="Copy story text"
-              className="rounded px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wide
-                         text-amber-400 hover:text-amber-300 bg-gray-900 border border-gray-700
-                         disabled:opacity-30 transition-colors duration-100 font-sans"
-            >
-              Copy
-            </button>
-
-            <button
-              onClick={handleDownload}
-              disabled={activePath.length === 0}
-              title="Download comic as PNG"
-              className="rounded px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wide
-                         text-sky-400 hover:text-sky-200 bg-gray-900 border border-gray-700
-                         disabled:opacity-30 transition-colors duration-100 font-sans"
-            >
-              ↓ Save
-            </button>
-
+            {/* Close */}
             <button
               onClick={onClose}
-              aria-label="Close drawer"
-              className="rounded p-1.5 text-gray-400 hover:text-white hover:bg-gray-800
-                         transition-colors duration-100"
+              aria-label="Close"
+              className="rounded-lg p-1.5 text-gray-500 hover:text-white hover:bg-gray-800
+                         transition-colors duration-100 flex-shrink-0"
             >
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                 <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
               </svg>
             </button>
           </div>
-        </div>
 
-        {/* ── Body ────────────────────────────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto bg-white">
-          {activePath.length > 0 ? (
-            <div className="flex flex-col gap-1 p-1 bg-black">
-
-              {/* Title / tagline block */}
-              {titleState.status === "loading" && (
-                <div className="px-4 py-5 bg-gray-950 flex flex-col items-center gap-1">
-                  <div className="h-5 w-48 rounded bg-gray-800 animate-pulse" />
-                  <div className="h-3 w-64 rounded bg-gray-800 animate-pulse" />
-                </div>
+          {/* ── Tab bar ───────────────────────────────────────────────────── */}
+          <div className="flex-shrink-0 flex items-center gap-0 border-b border-gray-800 px-5 pt-2">
+            <button
+              onClick={() => setActiveTab("story")}
+              className={`rounded-t-lg px-4 py-1.5 text-[12px] font-semibold transition-colors duration-100 border-b-2 -mb-px
+                ${activeTab === "story"
+                  ? "border-amber-500 text-amber-400"
+                  : "border-transparent text-gray-600 hover:text-gray-300"
+                }`}
+            >
+              Story Text
+            </button>
+            <button
+              onClick={() => setActiveTab("comic")}
+              className={`rounded-t-lg px-4 py-1.5 text-[12px] font-semibold transition-colors duration-100 border-b-2 -mb-px flex items-center gap-1.5
+                ${activeTab === "comic"
+                  ? "border-sky-500 text-sky-400"
+                  : "border-transparent text-gray-600 hover:text-gray-300"
+                }`}
+            >
+              Comic Strip
+              {activeTab === "comic" && isOpen && aiNodeIds.length > 0 && anyBuilding && (
+                <span className="text-[9px] text-amber-400/70 animate-pulse tabular-nums">
+                  {settledCount}/{aiNodeIds.length}
+                </span>
               )}
-              {titleState.status === "ready" && (
-                <div
-                  className="px-5 pt-6 pb-4 bg-gray-950 flex flex-col items-center gap-1.5"
-                  style={{ animation: "panelReveal 0.4s ease-out both" }}
-                >
-                  <h3 className="text-white text-xl font-bold font-serif text-center leading-tight">
-                    {titleState.title}
-                  </h3>
-                  <p className="text-gray-400 text-[12px] italic font-serif text-center">
-                    {titleState.tagline}
-                  </p>
-                </div>
+              {activeTab === "comic" && isOpen && aiNodeIds.length > 0 && !anyBuilding && (
+                <span className="text-[9px] text-green-400/60 tabular-nums">
+                  ✓
+                </span>
               )}
+            </button>
+          </div>
 
-              {/* Comic panels */}
-              {activePath.map((node, i) => (
-                <ComicPanel
-                  key={node.id}
-                  node={node}
-                  index={i}
-                  entry={imageMap[node.id]}
-                  nowMs={nowMs}
-                  isSpeaking={speakingIndex === i}
-                  panelRef={panelRefs.current[i]}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="flex h-full items-center justify-center p-6">
-              <p className="text-[13px] text-gray-400 italic font-serif text-center">
-                Select a node to read the story path from root to that point.
-              </p>
-            </div>
-          )}
+          {/* ── Body ──────────────────────────────────────────────────────── */}
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+
+            {/* ══ STORY TEXT TAB ══════════════════════════════════════════════ */}
+            {activeTab === "story" && (
+              <div className="flex-1 flex flex-col min-h-0">
+
+                {/* Toolbar: copy + listen */}
+                <div className="flex-shrink-0 flex items-center justify-between gap-2 px-5 py-2.5
+                                border-b border-gray-800/60 bg-gray-950/80">
+                  <span className="text-[11px] text-gray-600">
+                    {activePath.length} node{activePath.length !== 1 ? "s" : ""} · {pathText.split(/\s+/).filter(Boolean).length} words
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {/* TTS controls */}
+                    {hasSpeech && activePath.length > 0 && (
+                      ttsStatus === "idle" ? (
+                        <button
+                          onClick={handleSpeak}
+                          title="Listen to this path"
+                          className="rounded-lg px-3 py-1 text-[11px] font-semibold uppercase tracking-wide
+                                     text-purple-400 hover:text-purple-200 bg-gray-900 border border-gray-800
+                                     transition-colors duration-100 flex items-center gap-1"
+                        >
+                          <span aria-hidden="true">🔊</span> Listen
+                        </button>
+                      ) : ttsStatus === "speaking" ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={handlePause}
+                            className="rounded-lg px-3 py-1 text-[11px] font-semibold uppercase tracking-wide
+                                       text-amber-400 hover:text-amber-200 bg-gray-900 border border-gray-800
+                                       transition-colors duration-100"
+                          >
+                            ⏸ Pause
+                          </button>
+                          <button
+                            onClick={handleStop}
+                            className="rounded-lg p-1.5 text-gray-500 hover:text-red-400 bg-gray-900
+                                       border border-gray-800 transition-colors duration-100"
+                            aria-label="Stop"
+                          >
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
+                              <rect x="1" y="1" width="8" height="8" rx="1"/>
+                            </svg>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={handleResume}
+                            className="rounded-lg px-3 py-1 text-[11px] font-semibold uppercase tracking-wide
+                                       text-green-400 hover:text-green-200 bg-gray-900 border border-gray-800
+                                       transition-colors duration-100"
+                          >
+                            ▶ Resume
+                          </button>
+                          <button
+                            onClick={handleStop}
+                            className="rounded-lg p-1.5 text-gray-500 hover:text-red-400 bg-gray-900
+                                       border border-gray-800 transition-colors duration-100"
+                            aria-label="Stop"
+                          >
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true">
+                              <rect x="1" y="1" width="8" height="8" rx="1"/>
+                            </svg>
+                          </button>
+                        </div>
+                      )
+                    )}
+
+                    {/* Copy */}
+                    <button
+                      onClick={handleCopy}
+                      disabled={activePath.length === 0}
+                      title="Copy story text"
+                      className={`rounded-lg px-3 py-1 text-[11px] font-semibold uppercase tracking-wide
+                                  bg-gray-900 border border-gray-800 disabled:opacity-30
+                                  transition-colors duration-100
+                                  ${copied ? "text-green-400 border-green-800" : "text-amber-400 hover:text-amber-200"}`}
+                    >
+                      {copied ? "✓ Copied" : "Copy"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* ── Flowing prose — all nodes stitched into one readable story ── */}
+                <div className="flex-1 overflow-y-auto px-7 py-7">
+                  {activePath.length > 0 ? (
+                    <div className="prose-story max-w-prose mx-auto">
+                      {/* Story title / tagline */}
+                      {titleState.status === "ready" && (
+                        <div className="mb-8 text-center">
+                          <h2 className="text-2xl font-bold text-white font-serif leading-tight mb-1">
+                            {titleState.title}
+                          </h2>
+                          <p className="text-[13px] text-gray-500 italic font-serif">
+                            {titleState.tagline}
+                          </p>
+                          <div className="mt-4 mx-auto w-12 h-px bg-amber-500/30" />
+                        </div>
+                      )}
+                      {titleState.status === "loading" && (
+                        <div className="mb-8 flex flex-col items-center gap-2">
+                          <div className="h-5 w-48 rounded bg-gray-800/60 animate-pulse" />
+                          <div className="h-3 w-64 rounded bg-gray-800/60 animate-pulse" />
+                        </div>
+                      )}
+
+                      {/* Continuous prose — one <p> per node, no separators */}
+                      <div className="text-[16px] leading-[1.9] font-serif text-gray-100 tracking-[0.01em]">
+                        {activePath.map((node, i) => {
+                          const isUser   = node.authorType === "user";
+                          const isSpeakingNow = speakingIndex === i;
+                          return (
+                            <p
+                              key={node.id}
+                              className={`
+                                mb-[1.3em] last:mb-0
+                                transition-all duration-200
+                                ${isUser ? "text-teal-100" : "text-gray-100"}
+                                ${isSpeakingNow
+                                  ? "text-white"
+                                  : ""}
+                              `}
+                              style={isSpeakingNow
+                                ? { textShadow: "0 0 16px rgba(251,191,36,0.18)" }
+                                : undefined}
+                            >
+                              {/* Tiny inline speaker indicator while TTS is active */}
+                              {isSpeakingNow && (
+                                <span
+                                  className="inline-block mr-1.5 text-amber-400 animate-pulse text-[11px]"
+                                  aria-label="reading"
+                                >▶</span>
+                              )}
+                              {/* First-letter drop cap on the very first paragraph */}
+                              {i === 0 ? (
+                                <>
+                                  <span className="float-left text-[3.5em] leading-[0.75] font-bold
+                                                   text-amber-400/80 mr-1 mt-1 font-serif select-none"
+                                        aria-hidden="true">
+                                    {node.text.charAt(0)}
+                                  </span>
+                                  {node.text.slice(1)}
+                                </>
+                              ) : node.text}
+                            </p>
+                          );
+                        })}
+                      </div>
+
+                      {/* End ornament */}
+                      <div className="mt-10 flex items-center justify-center gap-3 text-gray-700 select-none">
+                        <div className="h-px flex-1 bg-gray-800" />
+                        <span className="text-[12px] font-serif italic">∗ ∗ ∗</span>
+                        <div className="h-px flex-1 bg-gray-800" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex h-full items-center justify-center">
+                      <p className="text-[13px] text-gray-600 italic font-serif text-center">
+                        Select a node to read the story path from root to that point.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ══ COMIC STRIP TAB ═════════════════════════════════════════════ */}
+            {activeTab === "comic" && (
+              <div className="flex-1 flex flex-col min-h-0">
+
+                {/* Toolbar: building status + download */}
+                <div className="flex-shrink-0 flex items-center justify-between gap-2 px-5 py-2.5
+                                border-b border-gray-800/60 bg-gray-950/80">
+                  <span className="text-[11px] text-gray-600">
+                    {isOpen && aiNodeIds.length > 0 && anyBuilding ? (
+                      <span className="text-amber-400/70 animate-pulse">
+                        Building comic… {settledCount}/{aiNodeIds.length} panels ready
+                      </span>
+                    ) : isOpen && aiNodeIds.length > 0 ? (
+                      <span className="text-green-400/60">
+                        {settledCount} panel{settledCount !== 1 ? "s" : ""} illustrated
+                      </span>
+                    ) : (
+                      <span>Comic strip</span>
+                    )}
+                  </span>
+                  <button
+                    onClick={handleDownload}
+                    disabled={activePath.length === 0}
+                    title="Download comic as PNG"
+                    className="rounded-lg px-3 py-1 text-[11px] font-semibold uppercase tracking-wide
+                               text-sky-400 hover:text-sky-200 bg-gray-900 border border-gray-800
+                               disabled:opacity-30 transition-colors duration-100 flex items-center gap-1.5"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                      <path d="M7 1v9M3 7l4 4 4-4M2 12h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    Download PNG
+                  </button>
+                </div>
+
+                {/* Comic panels */}
+                <div className="flex-1 overflow-y-auto bg-black">
+                  {activePath.length > 0 ? (
+                    <div className="flex flex-col gap-1 p-1">
+                      {/* Title block */}
+                      {titleState.status === "loading" && (
+                        <div className="px-4 py-5 bg-gray-950 flex flex-col items-center gap-1">
+                          <div className="h-5 w-48 rounded bg-gray-800 animate-pulse" />
+                          <div className="h-3 w-64 rounded bg-gray-800 animate-pulse" />
+                        </div>
+                      )}
+                      {titleState.status === "ready" && (
+                        <div
+                          className="px-5 pt-6 pb-4 bg-gray-950 flex flex-col items-center gap-1.5"
+                          style={{ animation: "panelReveal 0.4s ease-out both" }}
+                        >
+                          <h3 className="text-white text-xl font-bold font-serif text-center leading-tight">
+                            {titleState.title}
+                          </h3>
+                          <p className="text-gray-400 text-[12px] italic font-serif text-center">
+                            {titleState.tagline}
+                          </p>
+                        </div>
+                      )}
+
+                      {activePath.map((node, i) => (
+                        <ComicPanel
+                          key={node.id}
+                          node={node}
+                          index={i}
+                          entry={imageMap[node.id]}
+                          nowMs={nowMs}
+                          isSpeaking={speakingIndex === i}
+                          panelRef={panelRefs.current[i]}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex h-full items-center justify-center p-6">
+                      <p className="text-[13px] text-gray-600 italic font-serif text-center">
+                        Select a node to build the comic strip.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+          </div>
         </div>
       </div>
+      )}
 
       <style>{`
         @keyframes panelReveal {
@@ -863,6 +1009,13 @@ export default function PathDrawer({ isOpen, activePath, styleDescription, onClo
         }
         @keyframes spin {
           to { transform: rotate(360deg); }
+        }
+        @keyframes drawerIn {
+          from { opacity: 0; transform: scale(0.96) translateY(8px); }
+          to   { opacity: 1; transform: scale(1)    translateY(0);   }
+        }
+        .animate-drawer-in {
+          animation: drawerIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
         }
       `}</style>
     </>

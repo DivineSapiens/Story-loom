@@ -25,7 +25,7 @@ async function tryPollinations(
 ): Promise<string | null> {
   const url =
     `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}` +
-    `?width=768&height=768&nologo=true&model=flux&enhance=true` +
+    `?width=768&height=768&nologo=true&model=flux` +
     (seed != null ? `&seed=${seed}` : "");
 
   let res: Response;

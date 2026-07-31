@@ -9,15 +9,26 @@ import { QuillLoader } from "./StoryNodeCard";
 interface BranchPanelProps {
   options: BranchOption[] | null;
   isLoading: boolean;
-  /** Set when the last generation call failed. Shown in place of branch cards. */
   error: string | null;
   wrapUpRequested: boolean;
+  /** Current active genre — controlled from outside (page state). */
+  genre?: string;
   onSelect: (option: BranchOption) => void;
   onAddUserText: (text: string) => void;
   onToggleWrapUp: () => void;
-  /** Called when "Try again" or the ↺ refresh button is clicked. */
   onRetry: () => void;
+  /** Called when the user picks a genre in this panel — parent re-fetches. */
+  onGenreChange: (genre: string) => void;
+  /** Called when the user clicks "Skip — let AI choose best direction". */
+  onAiPick: (option: BranchOption) => void;
 }
+
+// ─── Genre list ───────────────────────────────────────────────────────────────
+
+const PANEL_GENRES = [
+  "Fantasy", "Sci-Fi", "Mystery", "Romance",
+  "Horror", "Thriller", "Historical", "Adventure",
+];
 
 // ─── Tone badge colours ───────────────────────────────────────────────────────
 
@@ -86,7 +97,6 @@ function BranchCard({ option, index, onSelect }: BranchCardProps) {
       `}
       style={{ animationDelay: `${index * 80}ms` }}
     >
-      {/* Header row */}
       <div className="flex items-center justify-between gap-2">
         {isEnding ? (
           <span className="text-[9px] font-bold uppercase tracking-widest text-amber-400/90
@@ -140,14 +150,37 @@ function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void 
   );
 }
 
-// ─── User-continuation input ──────────────────────────────────────────────────
+// ─── AI best-pick helper ──────────────────────────────────────────────────────
+// Scores options against momentum keywords; picks the highest-scoring non-ending.
 
-interface UserInputRowProps {
-  onAddUserText: (text: string) => void;
-  onSkip: () => void;
+function pickBestOption(options: BranchOption[]): BranchOption {
+  const nonEnding = options.filter((o) => !o.isEnding);
+  const pool = nonEnding.length > 0 ? nonEnding : options;
+  const kws = [
+    "stakes", "tension", "reveals", "raises", "forces", "drives",
+    "turns", "escalate", "conflict", "mystery", "danger", "pivotal",
+    "momentum", "pressure", "discovery", "confrontation",
+  ];
+  let best = pool[0];
+  let bestScore = -1;
+  for (const opt of pool) {
+    const lw = (opt.why ?? "").toLowerCase();
+    let score = 0;
+    for (const kw of kws) if (lw.includes(kw)) score++;
+    if (score > bestScore) { bestScore = score; best = opt; }
+  }
+  return best;
 }
 
-function UserInputRow({ onAddUserText, onSkip }: UserInputRowProps) {
+// ─── User-continuation row ────────────────────────────────────────────────────
+
+interface UserInputRowProps {
+  options: BranchOption[];
+  onAddUserText: (text: string) => void;
+  onAiPick: (option: BranchOption) => void;
+}
+
+function UserInputRow({ options, onAddUserText, onAiPick }: UserInputRowProps) {
   const [value, setValue] = useState("");
   return (
     <div className="flex items-end gap-2 px-4 pt-3 pb-2 border-t border-gray-800">
@@ -181,12 +214,69 @@ function UserInputRow({ onAddUserText, onSkip }: UserInputRowProps) {
           Add &amp; continue
         </button>
         <button
-          onClick={onSkip}
-          className="rounded-lg bg-gray-800 px-3 py-1.5 text-[11px] font-medium text-gray-300
-                     hover:bg-gray-700 border border-gray-700 transition-colors duration-100"
+          onClick={() => onAiPick(pickBestOption(options))}
+          title="AI picks the most compelling direction based on story context"
+          className="rounded-lg bg-gray-800 px-3 py-1.5 text-[11px] font-medium text-amber-400
+                     hover:bg-gray-700 hover:text-amber-300 border border-amber-900/40
+                     transition-colors duration-100 flex items-center gap-1"
         >
-          Skip, let AI continue
+          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M6 1v1.5M6 9.5V11M1 6h1.5M9.5 6H11M2.6 2.6l1.1 1.1M8.3 8.3l1.1 1.1M2.6 9.4l1.1-1.1M8.3 3.7l1.1-1.1"
+                  stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+            <circle cx="6" cy="6" r="1.8" stroke="currentColor" strokeWidth="1.2"/>
+          </svg>
+          Skip, let AI pick
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Genre selector row ───────────────────────────────────────────────────────
+// Shown inside the BranchPanel so the user can change genre and instantly
+// get fresh directions without touching any node.
+
+interface GenreSelectorRowProps {
+  currentGenre: string;
+  onGenreChange: (genre: string) => void;
+}
+
+function GenreSelectorRow({ currentGenre, onGenreChange }: GenreSelectorRowProps) {
+  return (
+    <div className="px-4 py-2 border-t border-gray-800/70 flex flex-col gap-1.5">
+      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">
+        Genre filter
+        {currentGenre && (
+          <span className="ml-1 normal-case font-normal text-amber-400/60">
+            — directions are styled as {currentGenre}
+          </span>
+        )}
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {/* "Any" chip = clear */}
+        <button
+          onClick={() => onGenreChange("")}
+          className={`rounded-full px-2.5 py-0.5 text-[10px] font-medium border transition-all duration-100
+            ${currentGenre === ""
+              ? "bg-gray-700 text-gray-200 border-gray-500"
+              : "bg-gray-900 text-gray-500 border-gray-700 hover:border-gray-500 hover:text-gray-300"
+            }`}
+        >
+          Any
+        </button>
+        {PANEL_GENRES.map((g) => (
+          <button
+            key={g}
+            onClick={() => onGenreChange(g)}
+            className={`rounded-full px-2.5 py-0.5 text-[10px] font-medium border transition-all duration-100
+              ${currentGenre === g
+                ? "bg-amber-500 text-gray-950 border-amber-500 shadow-sm shadow-amber-900/40"
+                : "bg-gray-900 text-gray-400 border-gray-700 hover:border-amber-500/50 hover:text-gray-200"
+              }`}
+          >
+            {g}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -195,24 +285,12 @@ function UserInputRow({ onAddUserText, onSkip }: UserInputRowProps) {
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 export default function BranchPanel({
-  options, isLoading, error, wrapUpRequested,
-  onSelect, onAddUserText, onToggleWrapUp, onRetry,
+  options, isLoading, error, wrapUpRequested, genre = "",
+  onSelect, onAddUserText, onToggleWrapUp, onRetry, onGenreChange, onAiPick,
 }: BranchPanelProps) {
-  /**
-   * Controls whether the "Continue in your own words" row is visible.
-   * - Starts true whenever a fresh set of options arrives (options identity changes).
-   * - Set to false when the user clicks "Skip, let AI continue".
-   * - Also collapses when loading starts or error occurs (no options = nothing to show).
-   *
-   * We derive a stable "options key" from the first option's id so that a new
-   * batch of options always resets this back to true without needing useEffect.
-   */
   const optionsKey = options?.[0]?.id ?? null;
   const [inputVisibleForKey, setInputVisibleForKey] = useState<string | null>(null);
 
-  // When a new batch of options arrives, mark that batch's key as "input visible".
-  // This runs during render (safe — it's just setting derived state) so it's
-  // immediately reflected in the same render cycle without a flash.
   if (optionsKey !== null && inputVisibleForKey !== optionsKey) {
     setInputVisibleForKey(optionsKey);
   }
@@ -231,14 +309,22 @@ export default function BranchPanel({
   return (
     <div className="flex-shrink-0 border-t border-gray-800 bg-gray-950">
 
-      {/* ── Top bar: heading + refresh + wrap-up toggle ───────────────── */}
+      {/* ── Top bar ───────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between px-4 pt-3 pb-1 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 flex-shrink-0">
             {heading}
           </p>
 
-          {/* ↺ Refresh — shown whenever options are ready (re-roll all four suggestions) */}
+          {/* Active genre badge */}
+          {genre && !isLoading && !error && (
+            <span className="rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide
+                             bg-amber-500/15 border border-amber-500/30 text-amber-400/80 flex-shrink-0">
+              {genre}
+            </span>
+          )}
+
+          {/* ↺ Refresh */}
           {!isLoading && !error && options && (
             <button
               onClick={onRetry}
@@ -248,19 +334,16 @@ export default function BranchPanel({
                          hover:border-amber-500 hover:text-amber-400 transition-colors duration-100
                          flex-shrink-0"
             >
-              {/* Circular-arrow refresh icon */}
               <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                <path d="M10 6A4 4 0 1 1 6 2" stroke="currentColor" strokeWidth="1.4"
-                      strokeLinecap="round"/>
-                <path d="M6 0l2 2-2 2" stroke="currentColor" strokeWidth="1.4"
-                      strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M10 6A4 4 0 1 1 6 2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                <path d="M6 0l2 2-2 2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
               Refresh
             </button>
           )}
         </div>
 
-        {/* Wrap-up toggle — only shown when options are ready */}
+        {/* Wrap-up toggle */}
         {!isLoading && !error && options && (
           <button
             onClick={onToggleWrapUp}
@@ -274,7 +357,6 @@ export default function BranchPanel({
               }
             `}
           >
-            {/* Ribbon/bow icon */}
             <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path d="M6 6C4 4 1 3 1 1.5a1.5 1.5 0 013 0C4 3 5 5 6 6z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
               <path d="M6 6C8 4 11 3 11 1.5a1.5 1.5 0 00-3 0C8 3 7 5 6 6z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
@@ -286,15 +368,25 @@ export default function BranchPanel({
         )}
       </div>
 
-      {/* ── User-continuation row ────────────────────────────────────── */}
+      {/* ── Genre selector row ────────────────────────────────────────── */}
+      <GenreSelectorRow
+        currentGenre={genre}
+        onGenreChange={(g) => {
+          onGenreChange(g);   // updates parent state.genre
+          // onRetry fires automatically in page.tsx via the genre change handler
+        }}
+      />
+
+      {/* ── User-continuation row ─────────────────────────────────────── */}
       {showInput && (
         <UserInputRow
+          options={options!}
           onAddUserText={(text) => { onAddUserText(text); }}
-          onSkip={() => setInputVisibleForKey(null)}
+          onAiPick={(opt) => { setInputVisibleForKey(null); onAiPick(opt); }}
         />
       )}
 
-      {/* ── 2×2 branch cards grid ────────────────────────────────────── */}
+      {/* ── 2×2 branch cards grid ─────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-3 px-4 pb-4 pt-2">
         {isLoading
           ? Array.from({ length: 4 }).map((_, i) => <LoadingCard key={i} index={i} />)

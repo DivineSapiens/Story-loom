@@ -33,6 +33,13 @@ interface NodeMenuProps extends NodeMenuCallbacks {
   isRoot: boolean;
   /** Accent colour for the trigger button (matches tone / palette). */
   accentColor?: string;
+  /**
+   * Optional context strings passed to the AI rewrite endpoint.
+   * textBefore = concatenated text of ancestor nodes (for "before" context).
+   * textAfter  = concatenated text of child nodes  (for "after" context).
+   */
+  textBefore?: string;
+  textAfter?: string;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -41,14 +48,19 @@ export default function NodeMenu({
   currentText,
   isRoot,
   accentColor = "#6b7280",
+  textBefore = "",
+  textAfter  = "",
   onPrune,
   onEdit,
   onInsert,
 }: NodeMenuProps) {
-  type Mode = "closed" | "menu" | "edit" | "insert" | "confirmPrune";
+  type Mode = "closed" | "menu" | "edit" | "insert" | "confirmPrune" | "aiRewrite";
   const [mode, setMode] = useState<Mode>("closed");
-  const [editText,   setEditText]   = useState(currentText);
-  const [insertText, setInsertText] = useState("");
+  const [editText,    setEditText]    = useState(currentText);
+  const [insertText,  setInsertText]  = useState("");
+  const [rewriteText, setRewriteText] = useState("");
+  const [rewriteLoading, setRewriteLoading] = useState(false);
+  const [rewriteError,   setRewriteError]   = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Sync editText if the parent updates currentText (e.g. after a save).
@@ -66,7 +78,50 @@ export default function NodeMenu({
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [mode]);
 
-  const close = useCallback(() => setMode("closed"), []);
+  const close = useCallback(() => {
+    setMode("closed");
+    setRewriteText("");
+    setRewriteError("");
+    setRewriteLoading(false);
+  }, []);
+
+  // ── AI rewrite ────────────────────────────────────────────────────────────
+  const handleStartAiRewrite = useCallback(async () => {
+    setMode("aiRewrite");
+    setRewriteText("");
+    setRewriteError("");
+    setRewriteLoading(true);
+    try {
+      const res = await fetch("/api/rewrite-node", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          nodeText:   currentText,
+          textBefore,
+          textAfter,
+        }),
+      });
+      // API returns { text } — normalise to rewriteText state
+      const data = await res.json() as { text?: string; rewrittenText?: string; error?: string; detail?: string };
+      const result = data.text ?? data.rewrittenText ?? "";
+      if (!res.ok || !result) {
+        setRewriteError(data.detail ?? data.error ?? "AI rewrite failed.");
+      } else {
+        setRewriteText(result);
+      }
+    } catch (err) {
+      setRewriteError(err instanceof Error ? err.message : "Network error.");
+    } finally {
+      setRewriteLoading(false);
+    }
+  }, [currentText, textBefore, textAfter]);
+
+  const handleAcceptRewrite = useCallback(() => {
+    const trimmed = rewriteText.trim();
+    if (!trimmed) return;
+    close();
+    onEdit(trimmed);
+  }, [rewriteText, close, onEdit]);
 
   const handlePruneConfirm = useCallback(() => {
     close();
@@ -133,6 +188,21 @@ export default function NodeMenu({
                         strokeWidth="1.4" strokeLinejoin="round"/>
                 </svg>
                 Edit text
+              </button>
+
+              <button
+                onClick={handleStartAiRewrite}
+                className="nopan flex items-center gap-2 px-3 py-2 text-[12px]
+                           text-amber-400/80 hover:bg-gray-800 hover:text-amber-300
+                           transition-colors duration-100 text-left"
+              >
+                {/* Sparkle / AI icon */}
+                <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v2M7 11v2M1 7h2M11 7h2M3.2 3.2l1.4 1.4M9.4 9.4l1.4 1.4M3.2 10.8l1.4-1.4M9.4 4.6l1.4-1.4"
+                        stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  <circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.3"/>
+                </svg>
+                AI rewrite
               </button>
 
               <button
@@ -211,6 +281,95 @@ export default function NodeMenu({
                   Cancel
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* ── AI rewrite form ─────────────────────────────────────────────── */}
+          {mode === "aiRewrite" && (
+            <div className="flex flex-col gap-2 p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-amber-400/80">
+                AI Rewrite
+              </p>
+
+              {rewriteLoading ? (
+                /* Loading state */
+                <div className="flex flex-col items-center gap-2 py-3">
+                  <svg
+                    className="w-5 h-5 text-amber-400"
+                    viewBox="0 0 24 24" fill="none"
+                    style={{ animation: "spin 1.2s linear infinite" }}
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2"
+                            strokeDasharray="20 40" strokeLinecap="round"/>
+                  </svg>
+                  <span className="text-[11px] text-gray-500">Rewriting with AI…</span>
+                </div>
+              ) : rewriteError ? (
+                /* Error state */
+                <div className="flex flex-col gap-2">
+                  <p className="text-[11px] text-red-400 leading-snug">{rewriteError}</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleStartAiRewrite}
+                      className="nopan flex-1 rounded-md bg-amber-700 px-2 py-1.5 text-[11px]
+                                 font-semibold text-white hover:bg-amber-600
+                                 transition-colors duration-100"
+                    >
+                      Retry
+                    </button>
+                    <button
+                      onClick={close}
+                      className="nopan rounded-md bg-gray-800 px-2 py-1.5 text-[11px]
+                                 text-gray-400 hover:bg-gray-700 border border-gray-700
+                                 transition-colors duration-100"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Result — show proposed rewrite for accept/reject */
+                <div className="flex flex-col gap-2">
+                  <p className="text-[9px] text-gray-600 leading-snug">
+                    Review the AI suggestion. Accept to replace the node text.
+                  </p>
+                  <textarea
+                    value={rewriteText}
+                    onChange={(e) => setRewriteText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleAcceptRewrite();
+                      if (e.key === "Escape") close();
+                    }}
+                    rows={5}
+                    className="nopan w-full resize-none rounded-lg bg-gray-800 px-2.5 py-2
+                               text-[12px] text-gray-100 placeholder-gray-600
+                               ring-1 ring-amber-700/40 focus:outline-none focus:ring-amber-500
+                               transition-all duration-150"
+                  />
+                  <p className="text-[9px] text-gray-600">⌘ Enter to accept</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleAcceptRewrite}
+                      disabled={!rewriteText.trim()}
+                      className="nopan flex-1 rounded-md bg-amber-600 px-2 py-1.5 text-[11px]
+                                 font-semibold text-white hover:bg-amber-500
+                                 disabled:opacity-30 disabled:cursor-not-allowed
+                                 transition-colors duration-100"
+                    >
+                      Accept
+                    </button>
+                    <button
+                      onClick={close}
+                      className="nopan rounded-md bg-gray-800 px-2 py-1.5 text-[11px]
+                                 text-gray-400 hover:bg-gray-700 border border-gray-700
+                                 transition-colors duration-100"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -299,6 +458,10 @@ export default function NodeMenu({
 
         </div>
       )}
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }

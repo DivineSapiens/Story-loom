@@ -22,9 +22,10 @@ export async function POST(req: NextRequest) {
   }
 
   const wrapUp = obj.wrapUp === true;
+  const genre  = typeof obj.genre === "string" ? obj.genre.trim() : "";
 
   try {
-    const branches = await generateBranches(pathText, wrapUp);
+    const branches = await generateBranches(pathText, wrapUp, genre);
     return NextResponse.json({ branches });
   } catch (err) {
     const detail =

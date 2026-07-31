@@ -26,7 +26,7 @@ interface StoryTreeProps {
   nodes: StoryNode[];
   activePathIds: string[];
   onNodeClick: (nodeId: string) => void;
-  onGenerateBranches: (nodeId: string) => void;
+  onGenerateBranches: (nodeId: string, genreOverride?: string) => void;
   /** Called when user clicks "Branch a character's story →" on a main node. */
   onCreateThread: (originNodeId: string) => void;
   /** Called when user clicks the canvas background — dismisses the branch panel. */
@@ -87,6 +87,41 @@ function StoryTreeInner({
     ? storyNodes[storyNodes.length - 1].id
     : null;
 
+  // ── Pre-compute ancestor / child text for AI-rewrite context ──────────────
+  // textBefore = all ancestor nodes' text joined with \n\n
+  // textAfter  = all direct children's text joined with \n\n
+  const nodeContextMap = useMemo(() => {
+    // Build parent lookup
+    const parentMap: Record<string, string | null> = {};
+    const childrenMap: Record<string, string[]> = {};
+    for (const sn of storyNodes) {
+      parentMap[sn.id] = sn.parentId;
+      if (sn.parentId) {
+        if (!childrenMap[sn.parentId]) childrenMap[sn.parentId] = [];
+        childrenMap[sn.parentId].push(sn.text);
+      }
+    }
+    const textById: Record<string, string> = {};
+    for (const sn of storyNodes) textById[sn.id] = sn.text;
+
+    const result: Record<string, { textBefore: string; textAfter: string }> = {};
+    for (const sn of storyNodes) {
+      // Walk ancestors
+      const ancestors: string[] = [];
+      let pid = sn.parentId;
+      while (pid) {
+        const t = textById[pid];
+        if (t) ancestors.unshift(t);
+        pid = parentMap[pid] ?? null;
+      }
+      result[sn.id] = {
+        textBefore: ancestors.join("\n\n"),
+        textAfter:  (childrenMap[sn.id] ?? []).join("\n\n"),
+      };
+    }
+    return result;
+  }, [storyNodes]);
+
   // ── Build main-tree RF nodes ───────────────────────────────────────────────
   const mainRfNodes: Node[] = useMemo(
     () =>
@@ -104,6 +139,8 @@ function StoryTreeInner({
           onPruneNode,
           onEditNode,
           onInsertNode,
+          textBefore: nodeContextMap[sn.id]?.textBefore ?? "",
+          textAfter:  nodeContextMap[sn.id]?.textAfter  ?? "",
         } satisfies StoryNodeData,
         width: 224,
         // 240px matches the tallest realistic card (tone badge + 5-line text +
@@ -111,7 +148,7 @@ function StoryTreeInner({
         height: 240,
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [storyNodes, mainLayout, activeSet, onNodeClick, onGenerateBranches, onCreateThread, onPruneNode, onEditNode, onInsertNode]
+    [storyNodes, mainLayout, activeSet, onNodeClick, onGenerateBranches, onCreateThread, onPruneNode, onEditNode, onInsertNode, nodeContextMap]
   );
 
   // ── Build main-tree RF edges ───────────────────────────────────────────────

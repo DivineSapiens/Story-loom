@@ -161,6 +161,12 @@ export interface TreeState {
    */
   styleDescription: string;
   /**
+   * Genre/tone the user selected on the landing screen (or per-node override).
+   * Passed into every branch-generation prompt so the AI stays consistent.
+   * Empty string = no genre constraint (AI chooses freely).
+   */
+  genre: string;
+  /**
    * Single-slot undo buffer. Populated when the user confirms a tree reset so
    * they can restore the previous tree via a dismissible banner.
    * null = nothing to restore.

@@ -18,6 +18,12 @@ Example output format (do not copy these values):
   {"text":"...", "tone":"Dark",       "why":"..."}
 ]`;
 
+/** Returns the system prompt, optionally prefixed with a genre constraint. */
+function buildSystemPrompt(base: string, genre: string): string {
+  if (!genre.trim()) return base;
+  return `Genre/tone of this story: ${genre}\nAll 4 directions must stay within this genre.\n\n${base}`;
+}
+
 const WRAP_UP_SYSTEM = `You are a creative writing partner helping to conclude a story.
 The writer has asked to wrap up the story. Propose exactly 4 directions:
   - 3 directions that are penultimate steps (each ~1–2 exchanges from the end)
@@ -127,17 +133,20 @@ function getWatsonxClient(): import("@ibm-cloud/watsonx-ai").WatsonXAI {
 
 async function generateBranchesFromWatsonx(
   pathText: string,
-  wrapUp = false
+  wrapUp = false,
+  genre  = ""
 ): Promise<BranchOption[]> {
   const client    = getWatsonxClient();
   const modelId   = process.env.WATSONX_MODEL_ID ?? "ibm/granite-3-8b-instruct";
   const projectId = process.env.WATSONX_PROJECT_ID!;
 
+  const systemPrompt = buildSystemPrompt(wrapUp ? WRAP_UP_SYSTEM : SYSTEM_INSTRUCTION, genre);
+
   const response = await client.textChat({
     modelId,
     projectId,
     messages: [
-      { role: "system", content: wrapUp ? WRAP_UP_SYSTEM : SYSTEM_INSTRUCTION },
+      { role: "system", content: systemPrompt },
       { role: "user",   content: `Story so far:\n${pathText}` },
     ],
     maxTokens:        1100,
@@ -164,10 +173,13 @@ const GROQ_MODEL   = "llama-3.3-70b-versatile";
 
 async function generateBranchesFromGroq(
   pathText: string,
-  wrapUp = false
+  wrapUp = false,
+  genre  = ""
 ): Promise<BranchOption[]> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("GROQ_API_KEY is not set");
+
+  const systemPrompt = buildSystemPrompt(wrapUp ? WRAP_UP_SYSTEM : SYSTEM_INSTRUCTION, genre);
 
   const res = await fetch(GROQ_API_URL, {
     method: "POST",
@@ -181,7 +193,7 @@ async function generateBranchesFromGroq(
       max_tokens: 1100,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: wrapUp ? WRAP_UP_SYSTEM : SYSTEM_INSTRUCTION },
+        { role: "system", content: systemPrompt },
         { role: "user",   content: `Story so far:\n${pathText}` },
       ],
     }),
@@ -287,7 +299,8 @@ function generateBranchesStub(): BranchOption[] {
  */
 export async function generateBranches(
   pathText: string,
-  wrapUp = false
+  wrapUp = false,
+  genre  = ""
 ): Promise<BranchOption[]> {
   const hasWatsonx =
     process.env.WATSONX_API_KEY &&
@@ -296,7 +309,7 @@ export async function generateBranches(
     process.env.WATSONX_PROJECT_ID !== "your-watsonx-project-id-here";
 
   if (hasWatsonx) {
-    return generateBranchesFromWatsonx(pathText, wrapUp); // ← ACTIVE: IBM Granite
+    return generateBranchesFromWatsonx(pathText, wrapUp, genre);
   }
 
   const hasGroq =
@@ -304,7 +317,7 @@ export async function generateBranches(
     process.env.GROQ_API_KEY !== "your-groq-api-key-here";
 
   if (hasGroq) {
-    return generateBranchesFromGroq(pathText, wrapUp);    // ← FALLBACK: Groq
+    return generateBranchesFromGroq(pathText, wrapUp, genre);
   }
 
   console.warn("[generateBranches] No AI credentials — using stub data.");
